@@ -285,7 +285,7 @@ fn url_encode(s: &str) -> String {
 pub fn resolve_player_url(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err("Empty URL or player ID".into());
+        return Err("BAD_REQUEST: Missing or empty url/id parameter".into());
     }
     if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(format!("https://stream.googleapiscdn.com/player/{trimmed}"));
@@ -293,22 +293,89 @@ pub fn resolve_player_url(input: &str) -> Result<String, String> {
     if trimmed.contains("stream.googleapiscdn.com/player/") {
         return Ok(trimmed.to_string());
     }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        let html = scraper::fetch_avs_html(trimmed, None)?;
-        if let Some(pos) = html.find("stream.googleapiscdn.com") {
-            let start = html[..pos].rfind("https:").unwrap_or(pos);
-            let slice = &html[start..];
-            let end = slice
-                .find(|c: char| matches!(c, '"' | '\'' | '<' | '>' | ' ' | '\n' | '\r'))
-                .unwrap_or(slice.len());
-            let raw_url = slice[..end].replace("\\/", "/");
-            if raw_url.contains("stream.googleapiscdn.com/player/") {
-                return Ok(raw_url);
+
+    let full_url = if trimmed.starts_with("/phim/") {
+        format!("https://{PARENT_HOST}{trimmed}")
+    } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        return Err(format!("BAD_REQUEST: Unsupported URL or player ID: {trimmed}"));
+    };
+
+    // Parse requested film slug and optional episode segment if this is an animevietsub /phim/ URL
+    let mut req_slug: Option<String> = None;
+    let mut req_ep_id: Option<String> = None;
+
+    if let Some(phim_idx) = full_url.find("/phim/") {
+        let after_phim = &full_url[phim_idx + 6..];
+        let path_only = after_phim.split(['?', '#']).next().unwrap_or(after_phim);
+        let mut segments = path_only.split('/').filter(|s| !s.is_empty());
+        if let Some(slug) = segments.next() {
+            req_slug = Some(slug.to_string());
+            if let Some(ep_seg) = segments.next() {
+                if ep_seg != "xem-phim.html" {
+                    let stem = ep_seg.strip_suffix(".html").unwrap_or(ep_seg);
+                    if let Some((_, tail_id)) = stem.rsplit_once('-') {
+                        if !tail_id.is_empty() && tail_id.bytes().all(|b| b.is_ascii_digit()) {
+                            req_ep_id = Some(tail_id.to_string());
+                        } else {
+                            return Err(format!(
+                                "NOT_FOUND: Link tập phim không hợp lệ ({ep_seg})"
+                            ));
+                        }
+                    } else {
+                        return Err(format!(
+                            "NOT_FOUND: Link tập phim không hợp lệ ({ep_seg})"
+                        ));
+                    }
+                }
             }
+        } else {
+            return Err("BAD_REQUEST: Missing film slug in /phim/ URL".into());
         }
-        return Err("Could not locate stream.googleapiscdn.com/player URL in watch page".into());
     }
-    Err(format!("Unsupported URL or player ID: {trimmed}"))
+
+    // If URL is a bare film page `/phim/<slug>` or `/phim/<slug>/`, redirect to `/phim/<slug>/xem-phim.html`
+    let fetch_target = if let (Some(ref slug), None) = (&req_slug, &req_ep_id) {
+        if !full_url.contains("xem-phim.html") {
+            format!("https://{PARENT_HOST}/phim/{slug}/xem-phim.html")
+        } else {
+            full_url.clone()
+        }
+    } else {
+        full_url.clone()
+    };
+
+    let html = scraper::fetch_avs_html(&fetch_target, None)?;
+
+    if let Some(ref slug) = req_slug {
+        let expected_path = format!("/phim/{slug}/");
+        if !html.contains(&expected_path) {
+            return Err(format!("NOT_FOUND: Phim '{slug}' không tồn tại"));
+        }
+    }
+
+    if let Some(ref ep_id) = req_ep_id {
+        let expected_data_id = format!("data-id=\"{ep_id}\"");
+        if !html.contains(&expected_data_id) {
+            let slug_label = req_slug.as_deref().unwrap_or("unknown");
+            return Err(format!(
+                "NOT_FOUND: Tập phim ID '{ep_id}' không tồn tại trong phim '{slug_label}'"
+            ));
+        }
+    }
+
+    let normalized_html = html.replace("\\/", "/");
+    if let Some(pos) = normalized_html.find("https://stream.googleapiscdn.com/player/") {
+        let slice = &normalized_html[pos..];
+        let end = slice
+            .find(|c: char| matches!(c, '"' | '\'' | '<' | '>' | ' ' | '\n' | '\r'))
+            .unwrap_or(slice.len());
+        let raw_url = &slice[..end];
+        return Ok(raw_url.to_string());
+    }
+
+    Err("NOT_FOUND: Không tìm thấy nguồn phát (stream.googleapiscdn.com/player) cho tập phim này".into())
 }
 
 /// Full end-to-end extraction from `https://stream.googleapiscdn.com/player/<id>`
@@ -321,19 +388,25 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
         .build();
 
     // 1. Fetch Player HTML
-    let html = agent
+    let html = match agent
         .get(player_url)
         .set("Referer", &format!("https://{PARENT_HOST}/"))
         .call()
-        .map_err(|e| format!("GET player failed: {e}"))?
-        .into_string()
-        .map_err(|e| format!("Read player HTML failed: {e}"))?;
+    {
+        Ok(resp) => resp
+            .into_string()
+            .map_err(|e| format!("Read player HTML failed: {e}"))?,
+        Err(ureq::Error::Status(404, _)) => {
+            return Err(format!("NOT_FOUND: Player URL không tồn tại ({player_url})"));
+        }
+        Err(e) => return Err(format!("GET player failed: {e}")),
+    };
 
     let player_id = extract_between(&html, "const id = \"", "\";")
-        .ok_or_else(|| "Could not find `const id` in player HTML".to_string())?
+        .ok_or_else(|| "NOT_FOUND: Player ID không tồn tại hoặc đã bị xóa".to_string())?
         .to_string();
     let avs_token = extract_between(&html, "const avsToken = \"", "\";")
-        .ok_or_else(|| "Could not find `const avsToken` in player HTML".to_string())?
+        .ok_or_else(|| "NOT_FOUND: Không tìm thấy avsToken cho Player ID này".to_string())?
         .to_string();
 
     let session_key = extract_session_key(&avs_token)?;
@@ -347,12 +420,20 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
         url_encode(&fc)
     );
 
-    let pl_resp = agent
+    let pl_resp = match agent
         .get(&pl_url)
         .set("Referer", player_url)
         .set("Origin", "https://stream.googleapiscdn.com")
         .call()
-        .map_err(|e| format!("GET playlist failed: {e}"))?;
+    {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(404, _)) => {
+            return Err(format!(
+                "NOT_FOUND: Playlist không tồn tại cho player_id '{player_id}'"
+            ));
+        }
+        Err(e) => return Err(format!("GET playlist failed: {e}")),
+    };
 
     let env = if let Some(env_h) = pl_resp.header("X-Envelope") {
         unpack_envelope(env_h)?

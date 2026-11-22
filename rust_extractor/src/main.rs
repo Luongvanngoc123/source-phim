@@ -1,8 +1,8 @@
 use avs_direct_m3u8::{
     build_direct_cdn_m3u8,
     scraper::{
-        fetch_anime_detail, fetch_catalog_list, fetch_genres_and_seasons, fetch_schedule,
-        search_anime,
+        fetch_anime_detail, fetch_catalog_list, fetch_genres_and_seasons, fetch_home_page,
+        fetch_schedule, refresh_cached_schedule_countdowns, search_anime, suggest_anime,
     },
     DirectM3u8Result,
 };
@@ -21,8 +21,6 @@ type JsonCacheMap = Arc<Mutex<HashMap<String, (Instant, String)>>>;
 
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(1800); // 30 minutes
 const META_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
-const DEFAULT_SAMPLE_URL: &str =
-    "https://stream.googleapiscdn.com/player/225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06";
 
 fn percent_decode(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
@@ -133,12 +131,23 @@ fn send_response(
     let _ = stream.flush();
 }
 
+fn map_error_status_and_message(err: &str) -> (&'static str, &str) {
+    if let Some(msg) = err.strip_prefix("NOT_FOUND:") {
+        ("404 Not Found", msg.trim())
+    } else if let Some(msg) = err.strip_prefix("BAD_REQUEST:") {
+        ("400 Bad Request", msg.trim())
+    } else {
+        ("502 Bad Gateway", err)
+    }
+}
+
 fn send_json_result(stream: TcpStream, res: Result<String, String>) {
     match res {
         Ok(body) => send_response(stream, "200 OK", "application/json; charset=utf-8", body.as_bytes()),
         Err(err) => {
-            let body = json!({ "success": false, "error": err }).to_string();
-            send_response(stream, "502 Bad Gateway", "application/json; charset=utf-8", body.as_bytes());
+            let (status, clean_msg) = map_error_status_and_message(&err);
+            let body = json!({ "success": false, "error": clean_msg }).to_string();
+            send_response(stream, status, "application/json; charset=utf-8", body.as_bytes());
         }
     }
 }
@@ -176,22 +185,23 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       </div>
     </div>
     <div class="bar">
-      <input id="urlInput" value="https://stream.googleapiscdn.com/player/225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06" placeholder="Nhập link tập phim animevietsub.bid, stream.googleapiscdn.com/player/<id> hoặc player_id..." />
+      <input id="urlInput" value="https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html" placeholder="Nhập link tập phim animevietsub.bid, stream.googleapiscdn.com/player/<id> hoặc player_id..." />
       <button onclick="playStream()">Giải mã & Phát thử</button>
     </div>
     <video id="video" controls playsinline></video>
     <div class="endpoints">
       <div>• <b><a href="/hdsd">GET /hdsd</a></b> — Tài liệu hướng dẫn sử dụng toàn bộ API</div>
-      <div>• <b><a href="/api/home">GET /api/home</a></b> — Danh sách phim mới cập nhật trên trang chủ (ảnh poster, tập, rating, năm, mô tả)</div>
-      <div>• <b><a href="/api/schedule">GET /api/schedule</a></b> — Lịch chiếu phim trong tuần kèm giờ chiếu & đếm ngược thời gian</div>
-      <div>• <b><a href="/api/upcoming?page=1">GET /api/upcoming?page=1</a></b> — Danh sách phim sắp chiếu & thời gian dự kiến</div>
+      <div>• <b><a href="/api/home">GET /api/home</a></b> — Trang chủ tách rõ 3 khối: <code>latest</code> (10), <code>upcoming</code> (10), <code>featured</code> (10) &amp; <code>items</code> (30) kèm <code>genres</code>, <code>studio</code></div>
+      <div>• <b><a href="/api/schedule">GET /api/schedule</a></b> — Lịch chiếu phim kèm giờ chiếu tuyệt đối ISO-8601 (<code>air_at</code>) &amp; đếm ngược thời gian thực (<code>countdown_seconds</code>)</div>
+      <div>• <b><a href="/api/upcoming?page=1">GET /api/upcoming?page=1</a></b> — Danh sách phim sắp chiếu &amp; thời gian dự kiến</div>
       <div>• <b><a href="/api/movies?page=1">GET /api/movies?page=1</a></b> — Danh sách Anime Lẻ / Movie</div>
       <div>• <b><a href="/api/series?page=1">GET /api/series?page=1</a></b> — Danh sách Anime Bộ / TV Series</div>
-      <div>• <b><a href="/api/genres">GET /api/genres</a></b> — Danh sách tất cả Thể loại & Mùa/Năm</div>
+      <div>• <b><a href="/api/genres">GET /api/genres</a></b> — Danh sách tất cả Thể loại &amp; Mùa/Năm</div>
       <div>• <b><a href="/api/genre?slug=hanh-dong&page=1">GET /api/genre?slug=hanh-dong&amp;page=1</a></b> — Lọc phim theo thể loại</div>
-      <div>• <b><a href="/api/search?q=black+clover&page=1">GET /api/search?q=black+clover&amp;page=1</a></b> — Tìm kiếm phim & gợi ý nhanh</div>
-      <div>• <b><a href="/api/anime?slug=black-clover-2nd-season-a6073">GET /api/anime?slug=black-clover-2nd-season-a6073</a></b> — Chi tiết phim, ảnh Poster/Banner, các Season (Phần 1/Phần 2/Movie) & danh sách Tập</div>
-      <div>• <b><a href="/api/playlist.m3u8?id=225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06">GET /api/playlist.m3u8?url=&lt;watch_or_player_url&gt;</a></b> — Xuất trực tiếp file .m3u8 chuẩn (nhúng thẳng key AES-128 & link lh3.googleusercontent.com)</div>
+      <div>• <b><a href="/api/suggest?q=black+clover">GET /api/suggest?q=black+clover</a></b> — Gợi ý tìm kiếm siêu tốc khi đang gõ (chỉ 1 request <code>/ajax/suggest</code>)</div>
+      <div>• <b><a href="/api/search?q=black+clover&page=1">GET /api/search?q=black+clover&amp;page=1</a></b> — Tìm kiếm phim đầy đủ có phân trang</div>
+      <div>• <b><a href="/api/anime?slug=black-clover-2nd-season-a6073">GET /api/anime?slug=black-clover-2nd-season-a6073</a></b> — Chi tiết phim, Season &amp; danh sách Tập gọn nhẹ (trả 404 nếu sai slug)</div>
+      <div>• <b><a href="/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html">GET /api/playlist.m3u8?url=&lt;watch_or_player_url&gt;</a></b> — Xuất trực tiếp file .m3u8 chuẩn (trả 404 nếu link tập không tồn tại)</div>
     </div>
   </div>
   <script>
@@ -283,7 +293,7 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
     <div class="header">
       <div>
         <h1>📖 Hướng Dẫn Sử Dụng API — cdn1.lvn123.site</h1>
-        <p>Full Anime Catalog, Search, Schedule, Seasons/Episodes &amp; Direct-CDN HLS Stream (Rust Engine)</p>
+        <p>Full Anime Catalog, Search, Suggest, Schedule, Seasons/Episodes &amp; Direct-CDN HLS Stream (Rust Engine)</p>
       </div>
       <div class="nav-btns">
         <a class="btn" href="/">▶️ Trình phát thử nghiệm (/)</a>
@@ -293,42 +303,49 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2>1. Danh sách API Catalog, Tìm kiếm, Lịch chiếu, Thông tin Phim &amp; Tập</h2>
+      <h2>1. Danh sách API Catalog, Tìm kiếm, Gợi ý nhanh, Lịch chiếu &amp; Thông tin Phim</h2>
 
       <div class="endpoint-box">
         <a class="try-link" href="/api/home" target="_blank">Mở thử ↗</a>
         <span class="method">GET</span>
         <span class="url">https://cdn1.lvn123.site/api/home</span>
-        <p style="margin:6px 0 0;font-size:13.5px;">Lấy danh sách phim mới cập nhật trên trang chủ kèm ảnh <code>poster</code>, tên phim, tập hiện tại (<code>episode_badge</code>), điểm đánh giá (<code>rating</code>), năm, lượt xem, studio, thể loại và mô tả.</p>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Trang chủ (tách riêng 3 khối):</b> Trả về <code>latest</code> (10 phim mới cập nhật), <code>upcoming</code> (10 phim sắp chiếu), <code>featured</code> (10 phim đề cử) và giữ nguyên <code>items</code> (30 phim) để tương thích ngược. Mọi phim đều có đủ <code>poster</code>, <code>episode_badge</code>, <code>rating</code>, <code>year</code>, <code>views</code>, <code>studio</code>, <code>genres</code> và <code>description</code>.</p>
       </div>
 
       <div class="endpoint-box">
         <a class="try-link" href="/api/schedule" target="_blank">Mở thử ↗</a>
         <span class="method">GET</span>
         <span class="url">https://cdn1.lvn123.site/api/schedule</span>
-        <p style="margin:6px 0 0;font-size:13.5px;"><b>Lịch chiếu phim &amp; thời gian chiếu:</b> Chia theo từng Thứ/Ngày trong tuần, kèm giờ chiếu (<code>air_time</code>: <i>"15 giờ 30 phút"</i>), bộ đếm ngược tới giờ chiếu (<code>schedule_badge</code>: <i>"55m 30s"</i>, <code>countdown_seconds</code>), số tập hiện tại và ảnh poster.</p>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Lịch chiếu phim &amp; giờ chiếu tuyệt đối:</b> Chia theo từng Thứ/Ngày trong tuần, kèm giờ chiếu tuyệt đối ISO-8601 theo múi giờ Việt Nam (<code>air_at</code>: <code>"2026-11-25T21:00:00+07:00"</code>, <code>air_at_unix</code>, <code>air_date</code>). Trường <code>countdown_seconds</code> và <code>schedule_badge</code> được tính lại theo thời gian thực ở mỗi request (không bị lệch bởi cache 5 phút).</p>
       </div>
 
       <div class="endpoint-box">
         <a class="try-link" href="/api/upcoming?page=1" target="_blank">Mở thử ↗</a>
         <span class="method">GET</span>
         <span class="url">https://cdn1.lvn123.site/api/upcoming?page=1</span>
-        <p style="margin:6px 0 0;font-size:13.5px;"><b>Danh sách phim sắp chiếu:</b> Gồm ảnh poster, trạng thái <i>"SẮP CHIẾU"</i>, năm/thời gian ra mắt dự kiến (<code>air_time</code>: <i>"2027"</i>), trailer/PV, studio và thể loại.</p>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Danh sách phim sắp chiếu:</b> Gồm ảnh poster, trạng thái <i>"SẮP CHIẾU"</i>, năm/thời gian ra mắt dự kiến (<code>air_time</code>: <i>"2027"</i>), trailer/PV, <code>studio</code> và mảng <code>genres</code> đầy đủ.</p>
       </div>
 
       <div class="endpoint-box">
         <a class="try-link" href="/api/anime?slug=black-clover-2nd-season-a6073" target="_blank">Mở thử ↗</a>
         <span class="method">GET</span>
         <span class="url">https://cdn1.lvn123.site/api/anime?slug=&lt;slug_or_url&gt;</span>
-        <p style="margin:6px 0 0;font-size:13.5px;"><b>Thông tin chi tiết phim + Season (Phần 1, Phần 2, Movie, Special) + Danh sách Tập:</b>
-          Trả về ảnh <code>poster</code>, ảnh nền lớn <code>banner</code> (<code>big_banner</code>), mô tả, điểm đánh giá, lịch chiếu, loại phim (<code>"series"</code> hoặc <code>"movie"</code>), mảng <code>seasons</code> (liên kết giữa Phần 1, Phần 2, Movie, OVA) và mảng <code>episodes</code> (danh sách từng tập kèm thẳng link <code>playlist_m3u8</code> để phát ngay).</p>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Thông tin chi tiết phim + Season (Phần 1, Phần 2, Movie, Special) + Danh sách Tập tối ưu dung lượng:</b>
+          Trả về HTTP <code>404 Not Found</code> (<code>{"success": false, "error": "..."}</code>) nếu <code>slug</code> không tồn tại. Mảng <code>episodes</code> được tối ưu gọn nhẹ (<code>episode</code>, <code>title</code>, <code>episode_id</code>, <code>source</code>, <code>watch_url</code>) giúp các bộ phim dài trên 1.200 tập (như Conan) giảm từ 680 KB xuống ~160 KB.</p>
+      </div>
+
+      <div class="endpoint-box">
+        <a class="try-link" href="/api/suggest?q=black+clover" target="_blank">Mở thử ↗</a>
+        <span class="method">GET</span>
+        <span class="url">https://cdn1.lvn123.site/api/suggest?q=&lt;tu_khoa&gt;</span>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Gợi ý nhanh khi đang gõ (Autocomplete):</b> Chỉ gọi 1 request duy nhất tới <code>/ajax/suggest</code>, trả nhanh <code>{ "success": true, "query": "...", "count": N, "items": [{ "title", "slug", "poster", "episode_note", "url", "detail_api" }] }</code>.</p>
       </div>
 
       <div class="endpoint-box">
         <a class="try-link" href="/api/search?q=black+clover&page=1" target="_blank">Mở thử ↗</a>
         <span class="method">GET</span>
         <span class="url">https://cdn1.lvn123.site/api/search?q=&lt;tu_khoa&gt;&amp;page=1</span>
-        <p style="margin:6px 0 0;font-size:13.5px;"><b>Tìm kiếm phim:</b> Kết hợp cả danh sách kết quả đầy đủ (<code>items</code>) lẫn danh sách gợi ý nhanh (<code>quick_suggestions</code> từ <code>/ajax/suggest</code>).</p>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Tìm kiếm phim đầy đủ có phân trang:</b> Chỉ gọi 1 request tới trang tìm kiếm <code>/tim-kiem/&lt;q&gt;/</code>, trả đầy đủ <code>items</code> kèm <code>genres</code>, <code>studio</code>, <code>rating</code>, <code>description</code>.</p>
       </div>
 
       <div class="endpoint-box">
@@ -367,7 +384,7 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
         <a class="try-link" href="/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html" target="_blank">Mở thử ↗</a>
         <span class="method">GET</span>
         <span class="url">https://cdn1.lvn123.site/api/playlist.m3u8?url=&lt;watch_url_or_player_url_or_id&gt;</span>
-        <p style="margin:6px 0 0;font-size:13.5px;">Nhận trực tiếp link tập phim (ví dụ <code>https://animevietsub.bid/phim/.../tap-01-115975.html</code>, hoặc link <code>stream.googleapiscdn.com/player/&lt;id&gt;</code>, hoặc mã hash 64 ký tự) và trả về file <code>#EXTM3U</code> chuẩn chứa khóa AES-128 inline cùng 311 link <code>https://lh3.googleusercontent.com/...=d</code>.</p>
+        <p style="margin:6px 0 0;font-size:13.5px;">Nhận trực tiếp link tập phim (<code>watch_url</code> từ <code>/api/anime</code>), link <code>stream.googleapiscdn.com/player/&lt;id&gt;</code> hoặc mã hash 64 ký tự và trả về file <code>#EXTM3U</code> chuẩn chứa khóa AES-128 inline cùng các segment <code>https://lh3.googleusercontent.com/...=d</code>. Nếu link tập không tồn tại hoặc không thuộc về bộ phim đó, API trả chuẩn <code>404 Not Found</code> (<code>{"success": false, "error": "..."}</code>).</p>
       </div>
 
       <div class="endpoint-box">
@@ -417,9 +434,7 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
       "title": "Tập 01",
       "episode_id": "115975",
       "source": "du",
-      "watch_url": "https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html",
-      "playlist_m3u8": "/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html",
-      "extract_api": "/api/extract?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html"
+      "watch_url": "https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html"
     }
   ]
 }</pre>
@@ -427,7 +442,7 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
 
     <div class="card">
       <h2>4. Code mẫu tích hợp Frontend (Hls.js — 0 Server Bandwidth)</h2>
-      <p>Chỉ cần lấy trường <code>playlist_m3u8</code> của tập phim từ <code>/api/anime</code> và truyền vào <code>Hls.js</code> kèm <code>DirectGoogleCdnLoader</code>:</p>
+      <p>Ghép trực tiếp <code>watch_url</code> từ <code>episodes</code> vào <code>/api/playlist.m3u8?url=</code> và truyền vào <code>Hls.js</code> kèm <code>DirectGoogleCdnLoader</code>:</p>
       <pre>&lt;video id="video" controls playsinline style="width:100%;max-width:960px;"&gt;&lt;/video&gt;
 &lt;script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"&gt;&lt;/script&gt;
 &lt;script&gt;
@@ -521,6 +536,7 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
                     "/api/series?page=1",
                     "/api/genres",
                     "/api/genre?slug=hanh-dong&page=1",
+                    "/api/suggest?q=black+clover",
                     "/api/search?q=black+clover&page=1",
                     "/api/anime?slug=black-clover-2nd-season-a6073",
                     "/api/playlist.m3u8?url=<watch_or_player_url>",
@@ -533,11 +549,12 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
         "/api/home" | "/home" => {
             let page = parse_page_param(query);
             let key = format!("home:{page}");
-            let res = get_or_fetch_json(&key, &json_cache, || fetch_catalog_list("", page));
+            let res = get_or_fetch_json(&key, &json_cache, || fetch_home_page(page));
             send_json_result(stream, res);
         }
         "/api/schedule" | "/schedule" => {
-            let res = get_or_fetch_json("schedule", &json_cache, fetch_schedule);
+            let res = get_or_fetch_json("schedule", &json_cache, fetch_schedule)
+                .map(|body| refresh_cached_schedule_countdowns(&body));
             send_json_result(stream, res);
         }
         "/api/upcoming" | "/upcoming" => {
@@ -580,27 +597,54 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
             let res = get_or_fetch_json(&key, &json_cache, || fetch_catalog_list(&cat_path, page));
             send_json_result(stream, res);
         }
+        "/api/suggest" | "/suggest" => {
+            let q = parse_query_param(query, "q")
+                .or_else(|| parse_query_param(query, "keyword"))
+                .unwrap_or_default();
+            let key = format!("suggest:{}", q.trim().to_lowercase());
+            let res = get_or_fetch_json(&key, &json_cache, || suggest_anime(&q));
+            send_json_result(stream, res);
+        }
         "/api/search" | "/search" => {
             let q = parse_query_param(query, "q")
                 .or_else(|| parse_query_param(query, "keyword"))
                 .unwrap_or_default();
             let page = parse_page_param(query);
-            let key = format!("search:{q}:{page}");
+            let key = format!("search:{}:{page}", q.trim().to_lowercase());
             let res = get_or_fetch_json(&key, &json_cache, || search_anime(&q, page));
             send_json_result(stream, res);
         }
         "/api/anime" | "/anime" | "/api/info" | "/info" => {
             let slug = parse_query_param(query, "slug")
                 .or_else(|| parse_query_param(query, "url"))
-                .unwrap_or_else(|| "black-clover-2nd-season-a6073".to_string());
-            let key = format!("anime:{slug}");
-            let res = get_or_fetch_json(&key, &json_cache, || fetch_anime_detail(&slug));
-            send_json_result(stream, res);
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            match slug {
+                Some(s) => {
+                    let key = format!("anime:{s}");
+                    let res = get_or_fetch_json(&key, &json_cache, || fetch_anime_detail(&s));
+                    send_json_result(stream, res);
+                }
+                None => {
+                    send_json_result(
+                        stream,
+                        Err("BAD_REQUEST: Missing required query parameter: slug".into()),
+                    );
+                }
+            }
         }
         "/api/playlist.m3u8" | "/playlist.m3u8" => {
             let target = parse_query_param(query, "url")
                 .or_else(|| parse_query_param(query, "id"))
-                .unwrap_or_else(|| DEFAULT_SAMPLE_URL.to_string());
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let Some(target) = target else {
+                send_json_result(
+                    stream,
+                    Err("BAD_REQUEST: Missing required query parameter: url or id".into()),
+                );
+                return;
+            };
             match get_or_extract(&target, &stream_cache) {
                 Ok((_cached, res)) => {
                     send_response(
@@ -611,20 +655,22 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
                     );
                 }
                 Err(err) => {
-                    let body = json!({ "success": false, "error": err }).to_string();
-                    send_response(
-                        stream,
-                        "502 Bad Gateway",
-                        "application/json; charset=utf-8",
-                        body.as_bytes(),
-                    );
+                    send_json_result(stream, Err(err));
                 }
             }
         }
         "/api/extract" | "/extract" => {
             let target = parse_query_param(query, "url")
                 .or_else(|| parse_query_param(query, "id"))
-                .unwrap_or_else(|| DEFAULT_SAMPLE_URL.to_string());
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let Some(target) = target else {
+                send_json_result(
+                    stream,
+                    Err("BAD_REQUEST: Missing required query parameter: url or id".into()),
+                );
+                return;
+            };
             match get_or_extract(&target, &stream_cache) {
                 Ok((cached, res)) => {
                     let body = json!({
@@ -646,18 +692,13 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
                     );
                 }
                 Err(err) => {
-                    let body = json!({ "success": false, "error": err }).to_string();
-                    send_response(
-                        stream,
-                        "502 Bad Gateway",
-                        "application/json; charset=utf-8",
-                        body.as_bytes(),
-                    );
+                    send_json_result(stream, Err(err));
                 }
             }
         }
         _ => {
             let body = json!({
+                "success": false,
                 "error": "Not Found",
                 "docs": "https://cdn1.lvn123.site/hdsd"
             })

@@ -58,15 +58,30 @@ Bộ công cụ giải mã tĩnh 2 lớp mật mã của player `stream.googleap
 
 API đã được triển khai qua Docker (`avs-direct-m3u8-api`, chỉ chiếm **~3.36 MB RAM**) và gắn SSL tự động qua Caddy tại **`https://cdn1.lvn123.site`**:
 
-- **Giao diện Web Console & Trình phát thử nghiệm:**
-  `https://cdn1.lvn123.site/`
-- **Healthcheck:**
-  `GET https://cdn1.lvn123.site/health`
-- **Xuất trực tiếp file `.m3u8` (nhúng sẵn khóa AES-128 & 311 link `lh3.googleusercontent.com`):**
-  `GET https://cdn1.lvn123.site/api/playlist.m3u8?url=https://stream.googleapiscdn.com/player/225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06`
-  *(Hoặc truyền trực tiếp mã hash 64 ký tự: `GET https://cdn1.lvn123.site/api/playlist.m3u8?id=225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06`)*
+- **Tài liệu HDSD trực tuyến:** `https://cdn1.lvn123.site/hdsd`
+- **Giao diện Web Console & Trình phát thử nghiệm:** `https://cdn1.lvn123.site/`
+- **Healthcheck:** `GET https://cdn1.lvn123.site/health`
+- **Trang chủ (Tách riêng 3 khối `latest`, `upcoming`, `featured` + giữ `items` tương thích ngược, kèm `genres` & `studio`):**
+  `GET https://cdn1.lvn123.site/api/home`
+- **Lịch chiếu phim trong tuần (Giờ chiếu tuyệt đối ISO-8601 `air_at`: `"2026-11-25T21:00:00+07:00"` + `countdown_seconds` tính theo thời gian thực không bị lệch bởi cache):**
+  `GET https://cdn1.lvn123.site/api/schedule`
+- **Danh sách phim sắp chiếu / Anime Lẻ (Movie) / Anime Bộ (Series):**
+  - `GET https://cdn1.lvn123.site/api/upcoming?page=1`
+  - `GET https://cdn1.lvn123.site/api/movies?page=1`
+  - `GET https://cdn1.lvn123.site/api/series?page=1`
+- **Danh sách Thể loại & Lọc theo Thể loại:**
+  - `GET https://cdn1.lvn123.site/api/genres`
+  - `GET https://cdn1.lvn123.site/api/genre?slug=hanh-dong&page=1`
+- **Gợi ý tìm kiếm siêu tốc khi đang gõ (chỉ 1 request `/ajax/suggest`):**
+  `GET https://cdn1.lvn123.site/api/suggest?q=black+clover`
+- **Tìm kiếm phim đầy đủ có phân trang (chỉ 1 request `/tim-kiem/<q>/`):**
+  `GET https://cdn1.lvn123.site/api/search?q=black+clover&page=1`
+- **Thông tin chi tiết phim + Season (Phần 1/Phần 2/Movie/Special) + Danh sách Tập gọn nhẹ (trả `404` nếu sai `slug`):**
+  `GET https://cdn1.lvn123.site/api/anime?slug=black-clover-2nd-season-a6073`
+- **Xuất trực tiếp file `.m3u8` (nhúng sẵn khóa AES-128 & các link `lh3.googleusercontent.com`, trả `404` nếu link tập không tồn tại):**
+  `GET https://cdn1.lvn123.site/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html`
 - **Xuất JSON đầy đủ (`player_id`, `segment_count`, `m3u8`, `m3u8_data_uri`):**
-  `GET https://cdn1.lvn123.site/api/extract?url=https://stream.googleapiscdn.com/player/225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06`
+  `GET https://cdn1.lvn123.site/api/extract?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html`
 
 ---
 

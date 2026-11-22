@@ -2,6 +2,7 @@ use crate::{DEFAULT_UA, PARENT_HOST};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static AVS_COOKIE: OnceLock<Mutex<String>> = OnceLock::new();
 
@@ -73,11 +74,15 @@ pub fn fetch_avs_html(url: &str, post_form: Option<&str>) -> Result<String, Stri
                 if !sc.is_empty() {
                     update_cookies_from_headers(&sc);
                 }
+                let final_url = resp.get_url().to_string();
                 let text = resp
                     .into_string()
                     .map_err(|e| format!("Failed reading response body: {e}"))?;
                 if text.len() < 1500 && text.contains("window.location.href") {
                     continue;
+                }
+                if final_url.contains("/404/") {
+                    return Err(format!("NOT_FOUND: Resource not found ({url})"));
                 }
                 return Ok(text);
             }
@@ -85,6 +90,9 @@ pub fn fetch_avs_html(url: &str, post_form: Option<&str>) -> Result<String, Stri
                 let sc = resp.all("Set-Cookie");
                 update_cookies_from_headers(&sc);
                 continue;
+            }
+            Err(ureq::Error::Status(404, _)) => {
+                return Err(format!("NOT_FOUND: HTTP 404 for {url}"));
             }
             Err(e) => return Err(format!("HTTP error for {url}: {e}")),
         }
@@ -128,6 +136,8 @@ pub fn clean_html_text(raw: &str) -> String {
         .replace("&amp;", "&")
         .replace("&quot;", "\"")
         .replace("&#039;", "'")
+        .replace("&#39;", "'")
+        .replace("&#39s", "'s")
         .replace("&apos;", "'")
         .replace("&lt;", "<")
         .replace("&gt;", ">");
@@ -153,12 +163,12 @@ pub fn extract_film_id_from_slug(slug: &str) -> Option<String> {
     None
 }
 
-/// Parse all `<li class="TPostMv">...</li>` cards in a page.
+/// Match only `<li class="TPostMv">` list items (avoids matching `<div class="TPostMv">` in top owl-carousel).
 pub fn parse_tpost_list(html: &str) -> Vec<Value> {
     let mut items = Vec::new();
     let mut cursor = html;
 
-    while let Some(pos) = cursor.find("class=\"TPostMv\"") {
+    while let Some(pos) = cursor.find("<li class=\"TPostMv\"") {
         let after = &cursor[pos..];
         let end_pos = after.find("</li>").unwrap_or(after.len());
         let block = &after[..end_pos];
@@ -197,7 +207,7 @@ pub fn parse_tpost_list(html: &str) -> Vec<Value> {
             let sub = &block[ts_pos..];
             let tag_end = sub.find('>').unwrap_or(sub.len());
             extract_attr(&sub[..tag_end], "data-timer_second")
-                .and_then(|s| s.parse::<u64>().ok())
+                .and_then(|s| s.parse::<i64>().ok())
         } else {
             None
         };
@@ -227,7 +237,9 @@ pub fn parse_tpost_list(html: &str) -> Vec<Value> {
             .and_then(|d| extract_between(d, "<p>", "</p>"))
             .map(clean_html_text);
 
-        let studio = extract_between(block, "class=\"Director", "</p>")
+        // Homepage uses `class="Studio AAIco-videocam"`, catalog/schedule uses `class="Director AAIco-videocam"`
+        let studio = extract_between(block, "class=\"Studio", "</p>")
+            .or_else(|| extract_between(block, "class=\"Director", "</p>"))
             .and_then(|d| d.find('>').map(|i| &d[i + 1..]))
             .map(clean_html_text)
             .map(|s| {
@@ -235,7 +247,8 @@ pub fn parse_tpost_list(html: &str) -> Vec<Value> {
                     .trim_start_matches("Đạo diễn:")
                     .trim()
                     .to_string()
-            });
+            })
+            .filter(|s| !s.is_empty());
 
         let mut genres = Vec::new();
         if let Some(g_block) = extract_between(block, "class=\"Genre", "</p>") {
@@ -245,8 +258,7 @@ pub fn parse_tpost_list(html: &str) -> Vec<Value> {
                 let a_end = a_sub.find("</a>").unwrap_or(a_sub.len());
                 let a_tag = &a_sub[..a_end];
                 if let Some(href) = extract_attr(a_tag, "href") {
-                    let g_name = extract_between(a_tag, ">", "")
-                        .unwrap_or_else(|| a_tag.split('>').nth(1).unwrap_or_default());
+                    let g_name = a_tag.split('>').nth(1).unwrap_or_default();
                     let g_slug = href
                         .trim_end_matches('/')
                         .rsplit('/')
@@ -289,9 +301,143 @@ pub fn parse_tpost_list(html: &str) -> Vec<Value> {
     items
 }
 
-/// Parse `/lich-chieu-phim.html` grouped by broadcast day & time.
+/// Fetch homepage (`/`) separated into `latest` (Mới cập nhật), `upcoming` (Sắp chiếu),
+/// `featured` (Đề cử), plus combined `items` for backward compatibility.
+pub fn fetch_home_page(page: u32) -> Result<Value, String> {
+    if page > 1 {
+        return fetch_catalog_list("anime-moi", page);
+    }
+    let html = fetch_avs_html(&format!("https://{PARENT_HOST}/"), None)?;
+
+    let mut sections: Vec<Vec<Value>> = Vec::new();
+    let mut cursor = html.as_str();
+    while let Some(pos) = cursor.find("<ul class=\"MovieList Rows") {
+        let after = &cursor[pos..];
+        let end_pos = after.find("</ul>").unwrap_or(after.len());
+        let ul_block = &after[..end_pos];
+        cursor = &after[end_pos..];
+        let parsed = parse_tpost_list(ul_block);
+        if !parsed.is_empty() {
+            sections.push(parsed);
+        }
+    }
+
+    let latest = sections.first().cloned().unwrap_or_default();
+    let upcoming = sections.get(1).cloned().unwrap_or_default();
+    let featured = sections.get(2).cloned().unwrap_or_default();
+
+    let mut all_items = Vec::with_capacity(latest.len() + upcoming.len() + featured.len());
+    all_items.extend(latest.iter().cloned());
+    all_items.extend(upcoming.iter().cloned());
+    all_items.extend(featured.iter().cloned());
+
+    Ok(json!({
+        "success": true,
+        "path": "",
+        "page": 1,
+        "latest_count": latest.len(),
+        "upcoming_count": upcoming.len(),
+        "featured_count": featured.len(),
+        "count": all_items.len(),
+        "latest": latest,
+        "upcoming": upcoming,
+        "featured": featured,
+        "items": all_items
+    }))
+}
+
+fn current_unix_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn is_leap_year(y: i32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = y - if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era as i64) * 146097 + (doe as i64) - 719468
+}
+
+fn civil_year_month_from_unix_vn(unix_secs: i64) -> (i32, u32) {
+    let vn_secs = unix_secs + 7 * 3600;
+    let z = vn_secs.div_euclid(86400) + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i32) + (era as i32) * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    (year, m)
+}
+
+/// Extract `(day, month)` from `"Thứ Tư , Ngày 25 tháng 11"`.
+fn parse_day_month_vn(day_header: &str) -> Option<(u32, u32)> {
+    let lower = day_header.to_lowercase();
+    let ngay_pos = lower.find("ngày")?;
+    let after_ngay = &lower[ngay_pos + "ngày".len()..];
+    let mut nums = after_ngay
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<u32>().ok());
+    let d = nums.next()?;
+    let m = nums.next()?;
+    if (1..=31).contains(&d) && (1..=12).contains(&m) {
+        Some((d, m))
+    } else {
+        None
+    }
+}
+
+/// Extract `(hour, minute)` from `"21 giờ 00 phút"` or `"15 giờ 30"`.
+fn parse_hour_min_vn(air_time: &str) -> Option<(u32, u32)> {
+    let mut nums = air_time
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<u32>().ok());
+    let h = nums.next()?;
+    let m = nums.next().unwrap_or(0);
+    if h <= 23 && m <= 59 {
+        Some((h, m))
+    } else {
+        None
+    }
+}
+
+fn format_countdown_badge(secs: i64) -> String {
+    if secs <= 0 {
+        return "Đã chiếu".to_string();
+    }
+    let d = secs / 86400;
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if d > 0 {
+        format!("{d}d {h}h {m}m {s}s")
+    } else if h > 0 {
+        format!("{h}h {m}m {s}s")
+    } else {
+        format!("{m}m {s}s")
+    }
+}
+
+/// Parse `/lich-chieu-phim.html` grouped by broadcast day & time, attaching exact
+/// ISO-8601 `air_at` (`2026-11-25T21:00:00+07:00`) and `air_at_unix`.
 pub fn fetch_schedule() -> Result<Value, String> {
     let html = fetch_avs_html(&format!("https://{PARENT_HOST}/lich-chieu-phim.html"), None)?;
+    let now_unix = current_unix_secs();
+    let (cur_year, cur_month) = civil_year_month_from_unix_vn(now_unix);
+
     let mut days = Vec::new();
     let mut cursor = html.as_str();
 
@@ -304,9 +450,76 @@ pub fn fetch_schedule() -> Result<Value, String> {
         let day_title = extract_between(sec, "<h1>", "</h1>")
             .map(clean_html_text)
             .unwrap_or_default();
-        let items = parse_tpost_list(sec);
+
+        let dm = parse_day_month_vn(&day_title);
+        let mut air_date_str = None;
+        let mut resolved_ymd = None;
+
+        if let Some((d, m)) = dm {
+            let mut y = cur_year;
+            if cur_month == 12 && m == 1 {
+                y += 1;
+            } else if cur_month == 1 && m == 12 {
+                y -= 1;
+            }
+            let max_d = match m {
+                2 => if is_leap_year(y) { 29 } else { 28 },
+                4 | 6 | 9 | 11 => 30,
+                _ => 31,
+            };
+            let d_valid = d.min(max_d);
+            air_date_str = Some(format!("{y:04}-{m:02}-{d_valid:02}"));
+            resolved_ymd = Some((y, m, d_valid));
+        }
+
+        let mut items = parse_tpost_list(sec);
+        for item in &mut items {
+            if let Some(obj) = item.as_object_mut() {
+                let mut computed_unix: Option<i64> = None;
+                let mut computed_iso: Option<String> = None;
+
+                if let (Some((y, m, d)), Some(air_t)) = (
+                    resolved_ymd,
+                    obj.get("air_time").and_then(|v| v.as_str()),
+                ) {
+                    if let Some((hh, mm)) = parse_hour_min_vn(air_t) {
+                        let days_since_epoch = days_from_civil(y, m, d);
+                        let utc_secs =
+                            days_since_epoch * 86400 + (hh as i64) * 3600 + (mm as i64) * 60 - 7 * 3600;
+                        computed_unix = Some(utc_secs);
+                        computed_iso = Some(format!(
+                            "{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:00+07:00"
+                        ));
+                    }
+                }
+
+                if computed_unix.is_none() {
+                    if let Some(cd) = obj.get("countdown_seconds").and_then(|v| v.as_i64()) {
+                        computed_unix = Some(now_unix + cd);
+                    }
+                }
+
+                if let Some(u_ts) = computed_unix {
+                    let live_cd = (u_ts - now_unix).max(0);
+                    obj.insert("air_at_unix".to_string(), json!(u_ts));
+                    obj.insert("countdown_seconds".to_string(), json!(live_cd));
+                    obj.insert(
+                        "schedule_badge".to_string(),
+                        json!(format_countdown_badge(live_cd)),
+                    );
+                }
+                if let Some(iso) = computed_iso {
+                    obj.insert("air_at".to_string(), json!(iso));
+                }
+                if let Some(ref d_str) = air_date_str {
+                    obj.insert("air_date".to_string(), json!(d_str));
+                }
+            }
+        }
+
         days.push(json!({
             "day": day_title,
+            "date": air_date_str,
             "count": items.len(),
             "items": items
         }));
@@ -314,9 +527,41 @@ pub fn fetch_schedule() -> Result<Value, String> {
 
     Ok(json!({
         "success": true,
+        "generated_at_unix": now_unix,
         "day_count": days.len(),
         "schedule": days
     }))
+}
+
+/// Refresh `countdown_seconds` and `schedule_badge` on a cached schedule JSON using current wall-clock time
+/// so cached responses never have 5-minute countdown drift.
+pub fn refresh_cached_schedule_countdowns(cached_json: &str) -> String {
+    let Ok(mut root) = serde_json::from_str::<Value>(cached_json) else {
+        return cached_json.to_string();
+    };
+    let now_unix = current_unix_secs();
+    if let Some(root_obj) = root.as_object_mut() {
+        root_obj.insert("server_time_unix".to_string(), json!(now_unix));
+        if let Some(days) = root_obj.get_mut("schedule").and_then(|v| v.as_array_mut()) {
+            for day in days {
+                if let Some(items) = day.get_mut("items").and_then(|v| v.as_array_mut()) {
+                    for item in items {
+                        if let Some(obj) = item.as_object_mut() {
+                            if let Some(air_unix) = obj.get("air_at_unix").and_then(|v| v.as_i64()) {
+                                let live_cd = (air_unix - now_unix).max(0);
+                                obj.insert("countdown_seconds".to_string(), json!(live_cd));
+                                obj.insert(
+                                    "schedule_badge".to_string(),
+                                    json!(format_countdown_badge(live_cd)),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    root.to_string()
 }
 
 /// Fetch catalog page (`/anime-sap-chieu/`, `/anime-le/`, `/anime-bo/`, `/the-loai/<slug>/`, etc.).
@@ -398,13 +643,8 @@ pub fn fetch_genres_and_seasons() -> Result<Value, String> {
     }))
 }
 
-/// Search anime by keyword (combines full search cards + quick AJAX suggest).
-pub fn search_anime(query: &str, page: u32) -> Result<Value, String> {
-    let q_trimmed = query.trim();
-    if q_trimmed.is_empty() {
-        return Err("Missing search query parameter `q`".into());
-    }
-    let encoded_q = q_trimmed
+fn encode_search_keyword(q_trimmed: &str) -> String {
+    q_trimmed
         .bytes()
         .map(|b| {
             if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.') {
@@ -415,7 +655,64 @@ pub fn search_anime(query: &str, page: u32) -> Result<Value, String> {
                 format!("%{:02X}", b)
             }
         })
-        .collect::<String>();
+        .collect::<String>()
+}
+
+/// Fast autocomplete suggestions (`POST /ajax/suggest` only — single lightweight upstream request).
+pub fn suggest_anime(query: &str) -> Result<Value, String> {
+    let q_trimmed = query.trim();
+    if q_trimmed.is_empty() {
+        return Err("BAD_REQUEST: Missing search query parameter `q`".into());
+    }
+    let encoded_q = encode_search_keyword(q_trimmed);
+    let form = format!("ajaxSearch=1&keysearch={encoded_q}");
+    let sug_html = fetch_avs_html(&format!("https://{PARENT_HOST}/ajax/suggest"), Some(&form))?;
+
+    let mut items = Vec::new();
+    let mut cur = sug_html.as_str();
+    while let Some(li_pos) = cur.find("<li>") {
+        let sub = &cur[li_pos..];
+        let end = sub.find("</li>").unwrap_or(sub.len());
+        let block = &sub[..end];
+        cur = &sub[end..];
+
+        let href = extract_between(block, "href=\"", "\"").unwrap_or_default();
+        let slug = extract_slug_from_url(href);
+        let poster = extract_between(block, "url('", "')")
+            .or_else(|| extract_between(block, "url(\"", "\")"))
+            .unwrap_or_default();
+        let title = extract_between(block, "class=\"ss-title\">", "</a>")
+            .map(clean_html_text)
+            .unwrap_or_default();
+        let episode_note = extract_between(block, "<p>", "</p>").map(clean_html_text);
+
+        if !title.is_empty() {
+            items.push(json!({
+                "title": title,
+                "slug": slug,
+                "url": href,
+                "poster": poster,
+                "episode_note": episode_note,
+                "detail_api": format!("/api/anime?slug={slug}")
+            }));
+        }
+    }
+
+    Ok(json!({
+        "success": true,
+        "query": q_trimmed,
+        "count": items.len(),
+        "items": items
+    }))
+}
+
+/// Full search page (`GET /tim-kiem/<q>/` only — 1 single upstream request).
+pub fn search_anime(query: &str, page: u32) -> Result<Value, String> {
+    let q_trimmed = query.trim();
+    if q_trimmed.is_empty() {
+        return Err("BAD_REQUEST: Missing search query parameter `q`".into());
+    }
+    let encoded_q = encode_search_keyword(q_trimmed);
 
     let search_url = if page > 1 {
         format!("https://{PARENT_HOST}/tim-kiem/{encoded_q}/trang-{page}.html")
@@ -426,74 +723,40 @@ pub fn search_anime(query: &str, page: u32) -> Result<Value, String> {
     let html = fetch_avs_html(&search_url, None)?;
     let items = parse_tpost_list(&html);
 
-    // Also fetch quick suggest on page 1
-    let mut suggestions = Vec::new();
-    if page == 1 {
-        let form = format!("ajaxSearch=1&keysearch={encoded_q}");
-        if let Ok(sug_html) = fetch_avs_html(&format!("https://{PARENT_HOST}/ajax/suggest"), Some(&form)) {
-            let mut cur = sug_html.as_str();
-            while let Some(li_pos) = cur.find("<li>") {
-                let sub = &cur[li_pos..];
-                let end = sub.find("</li>").unwrap_or(sub.len());
-                let block = &sub[..end];
-                cur = &sub[end..];
-
-                let href = extract_between(block, "href=\"", "\"").unwrap_or_default();
-                let slug = extract_slug_from_url(href);
-                let poster = extract_between(block, "url('", "')")
-                    .or_else(|| extract_between(block, "url(\"", "\")"))
-                    .unwrap_or_default();
-                let title = extract_between(block, "class=\"ss-title\">", "</a>")
-                    .map(clean_html_text)
-                    .unwrap_or_default();
-                let episode_note = extract_between(block, "<p>", "</p>").map(clean_html_text);
-
-                if !title.is_empty() {
-                    suggestions.push(json!({
-                        "title": title,
-                        "slug": slug,
-                        "url": href,
-                        "poster": poster,
-                        "episode_note": episode_note,
-                        "detail_api": format!("/api/anime?slug={slug}")
-                    }));
-                }
-            }
-        }
-    }
-
     Ok(json!({
         "success": true,
         "query": q_trimmed,
         "page": page,
         "count": items.len(),
-        "items": items,
-        "quick_suggestions": suggestions
+        "items": items
     }))
 }
 
 /// Fetch full anime details, poster, big banner, seasons (SS1/SS2/Movie/Special),
-/// metadata attributes, and complete episode list with direct `.m3u8` stream links.
+/// metadata attributes, and compact episode list (`episode`, `title`, `episode_id`, `source`, `watch_url`).
 pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
     let slug = extract_slug_from_url(slug_or_url);
     if slug.is_empty() {
-        return Err("Missing anime `slug` or `url`".into());
+        return Err("BAD_REQUEST: Missing anime `slug` or `url`".into());
     }
     let info_url = format!("https://{PARENT_HOST}/phim/{slug}/");
-    let watch_url = format!("https://{PARENT_HOST}/phim/{slug}/xem-phim.html");
-
     let info_html = fetch_avs_html(&info_url, None)?;
-    let watch_html = fetch_avs_html(&watch_url, None).unwrap_or_default();
 
-    let single_block = if let Some(pos) = info_html.find("class=\"TPost Single\"") {
-        &info_html[pos..]
-    } else {
-        info_html.as_str()
+    let Some(single_pos) = info_html.find("class=\"TPost Single\"") else {
+        return Err(format!("NOT_FOUND: Không tìm thấy phim với slug '{slug}'"));
     };
+    let single_block = &info_html[single_pos..];
 
     let title = extract_between(single_block, "<h1 class=\"Title\">", "</h1>")
         .map(clean_html_text)
         .unwrap_or_default();
+    if title.is_empty() {
+        return Err(format!("NOT_FOUND: Không tìm thấy phim với slug '{slug}'"));
+    }
+
+    let watch_url = format!("https://{PARENT_HOST}/phim/{slug}/xem-phim.html");
+    let watch_html = fetch_avs_html(&watch_url, None).unwrap_or_default();
+
     let sub_title = extract_between(single_block, "<h2 class=\"SubTitle\">", "</h2>")
         .map(clean_html_text);
     let poster = extract_between(single_block, "<figure class=\"Objf\">", "</figure>")
@@ -621,7 +884,7 @@ pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
         }
     }
 
-    // Parse Episodes from watch_html
+    // Parse compact Episodes from watch_html (omits bulky `hash`, `playlist_m3u8`, `extract_api` so 1200+ ep anime stay <200KB)
     let mut episodes = Vec::new();
     let mut e_cur = watch_html.as_str();
     while let Some(a_pos) = e_cur.find("<a ") {
@@ -637,7 +900,6 @@ pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
         let ep_title = extract_attr(a_tag, "title").unwrap_or_default();
         let ep_href = extract_attr(a_tag, "href").unwrap_or_default();
         let ep_source = extract_attr(a_tag, "data-source").unwrap_or_default();
-        let ep_hash = extract_attr(a_tag, "data-hash").unwrap_or_default();
         let ep_num = a_tag.split('>').nth(1).map(clean_html_text).unwrap_or_default();
 
         if !ep_href.is_empty() {
@@ -646,15 +908,11 @@ pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
                 "title": ep_title,
                 "episode_id": ep_id,
                 "source": ep_source,
-                "hash": ep_hash,
-                "watch_url": ep_href,
-                "playlist_m3u8": format!("/api/playlist.m3u8?url={ep_href}"),
-                "extract_api": format!("/api/extract?url={ep_href}")
+                "watch_url": ep_href
             }));
         }
     }
 
-    // Extract current initial player link from watch_html if available
     let initial_player_url = if let Some(pos) = watch_html.find("stream.googleapiscdn.com") {
         let start = watch_html[..pos].rfind("https:").unwrap_or(pos);
         let slice = &watch_html[start..];

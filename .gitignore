@@ -9,4 +9,6 @@ rea_evidence.json
 *.ts
 *.mp4
 *.html
+!web-anime-redesign/
+!web-anime-redesign/*.html
 make_sample_clip.py
