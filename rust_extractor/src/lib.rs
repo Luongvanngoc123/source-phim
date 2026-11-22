@@ -10,6 +10,8 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::io::Read;
 
+pub mod scraper;
+
 type HmacSha256 = Hmac<Sha256>;
 type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
 
@@ -292,16 +294,7 @@ pub fn resolve_player_url(input: &str) -> Result<String, String> {
         return Ok(trimmed.to_string());
     }
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        let agent = ureq::AgentBuilder::new().user_agent(DEFAULT_UA).build();
-        let resp = agent
-            .get(trimmed)
-            .set("Referer", &format!("https://{PARENT_HOST}/"))
-            .call();
-        let html = match resp {
-            Ok(r) => r.into_string().unwrap_or_default(),
-            Err(ureq::Error::Status(_code, r)) => r.into_string().unwrap_or_default(),
-            Err(e) => return Err(format!("Failed to fetch watch page: {e}")),
-        };
+        let html = scraper::fetch_avs_html(trimmed, None)?;
         if let Some(pos) = html.find("stream.googleapiscdn.com") {
             let start = html[..pos].rfind("https:").unwrap_or(pos);
             let slice = &html[start..];
