@@ -278,9 +278,51 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+/// Resolve either a 64-char hex player ID, a `stream.googleapiscdn.com/player/<id>` URL,
+/// or an `animevietsub.*` watch page URL into a canonical `https://stream.googleapiscdn.com/player/<id>` URL.
+pub fn resolve_player_url(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Empty URL or player ID".into());
+    }
+    if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(format!("https://stream.googleapiscdn.com/player/{trimmed}"));
+    }
+    if trimmed.contains("stream.googleapiscdn.com/player/") {
+        return Ok(trimmed.to_string());
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let agent = ureq::AgentBuilder::new().user_agent(DEFAULT_UA).build();
+        let resp = agent
+            .get(trimmed)
+            .set("Referer", &format!("https://{PARENT_HOST}/"))
+            .call();
+        let html = match resp {
+            Ok(r) => r.into_string().unwrap_or_default(),
+            Err(ureq::Error::Status(_code, r)) => r.into_string().unwrap_or_default(),
+            Err(e) => return Err(format!("Failed to fetch watch page: {e}")),
+        };
+        if let Some(pos) = html.find("stream.googleapiscdn.com") {
+            let start = html[..pos].rfind("https:").unwrap_or(pos);
+            let slice = &html[start..];
+            let end = slice
+                .find(|c: char| matches!(c, '"' | '\'' | '<' | '>' | ' ' | '\n' | '\r'))
+                .unwrap_or(slice.len());
+            let raw_url = slice[..end].replace("\\/", "/");
+            if raw_url.contains("stream.googleapiscdn.com/player/") {
+                return Ok(raw_url);
+            }
+        }
+        return Err("Could not locate stream.googleapiscdn.com/player URL in watch page".into());
+    }
+    Err(format!("Unsupported URL or player ID: {trimmed}"))
+}
+
 /// Full end-to-end extraction from `https://stream.googleapiscdn.com/player/<id>`
-/// to a self-contained `.m3u8` pointing directly to `lh3.googleusercontent.com`.
-pub fn build_direct_cdn_m3u8(player_url: &str, inline_key: bool) -> Result<DirectM3u8Result, String> {
+/// (or a 64-hex player ID / watch URL) to a self-contained `.m3u8` pointing directly to `lh3.googleusercontent.com`.
+pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<DirectM3u8Result, String> {
+    let resolved_url = resolve_player_url(player_input)?;
+    let player_url = resolved_url.as_str();
     let agent = ureq::AgentBuilder::new()
         .user_agent(DEFAULT_UA)
         .build();

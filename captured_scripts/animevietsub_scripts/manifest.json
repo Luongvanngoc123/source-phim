@@ -1,0 +1,434 @@
+{
+  "capture_path": "C:\\Users\\Van.Nqoc\\.gemini\\antigravity\\brain\\16ae0426-09d3-4cdc-9b27-026dd72c5552\\.system_generated\\steps\\39\\output.txt",
+  "capture_sha256": "956fb947a1dfbc000718a7ce216ba54240fa3d74ef7b89ac01add708bda490cb",
+  "capture_kind": "browser-scenario",
+  "source_evidence_id": "ev_93dbd9529d2241e1e557a61f08d041d677a1616940579f1c8114b1ae93b66e52",
+  "capture_completeness": {
+    "status": "incomplete",
+    "equality_eligible": false,
+    "missing_sections": [
+      "events"
+    ],
+    "truncated_sections": []
+  },
+  "output_directory": "D:\\anime\\animevietsub_scripts",
+  "analysis_input": {
+    "input_path": "D:\\anime\\animevietsub_scripts\\files",
+    "format": "directory"
+  },
+  "scripts": [
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-3",
+        "request_sequence": 7,
+        "response_sequence": 19,
+        "status": 200
+      },
+      "url": "https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-1-b96d1306d848636270f6aee2a40babb0cfc61cc4d9f4c4d90804804aa0690ecf.js",
+        "layout": "isolated",
+        "layout_reason": "URL path is not an ordinary portable JavaScript module path.",
+        "sha256": "637381256384554e1cc3309a62fb238a51b83e7f10b2a56d8ba15dbc73ca762e",
+        "bytes": 31853,
+        "media_type": "text/javascript;charset=UTF-8",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-4",
+        "request_sequence": 9,
+        "response_sequence": 15,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/cdn-cgi/scripts/7d0fa10a/cloudflare-static/rocket-loader.min.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-2-2690e6c6fec98bb6507a0b4f568fa8654210aae79382fc9e6ee76b4fc9cb7e41.js",
+        "layout": "isolated",
+        "layout_reason": "Captured paths collide by content version or file/directory prefix.",
+        "sha256": "ccf00d1923b0131a10e0c6d26f95e5dee6ebf8621a27e83c5a2f68a2e0093142",
+        "bytes": 12332,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-37",
+        "request_sequence": 112,
+        "response_sequence": 209,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "origins/eeac58c3052fc0bbc2651390b7c3d72c8b5e08079b06317519a2d1da83653af0/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js",
+        "layout": "url-path",
+        "layout_reason": null,
+        "sha256": "2595496fe48df6fcf9b1bc57c29a744c121eb4dd11566466bc13d2e52e6bbcc8",
+        "bytes": 1239,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-43",
+        "request_sequence": 124,
+        "response_sequence": 126,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/cdn-cgi/scripts/7d0fa10a/cloudflare-static/rocket-loader.min.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-4-3c08e2afd67369a15f27a1ed31e473c0e1dad882731a3bcdf5c789d7200852c5.js",
+        "layout": "isolated",
+        "layout_reason": "Captured paths collide by content version or file/directory prefix.",
+        "sha256": "ccf00d1923b0131a10e0c6d26f95e5dee6ebf8621a27e83c5a2f68a2e0093142",
+        "bytes": 12332,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-44",
+        "request_sequence": 128,
+        "response_sequence": 130,
+        "status": 200
+      },
+      "url": "https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-5-d127f2d952f7c31c7361c3abe059cacca34b4349df35910374843285195fec54.js",
+        "layout": "isolated",
+        "layout_reason": "URL path is not an ordinary portable JavaScript module path.",
+        "sha256": "637381256384554e1cc3309a62fb238a51b83e7f10b2a56d8ba15dbc73ca762e",
+        "bytes": 31853,
+        "media_type": "text/javascript;charset=UTF-8",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-69",
+        "request_sequence": 212,
+        "response_sequence": 359,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/user-hover-card.js?v=2.0.51",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-70",
+        "request_sequence": 214,
+        "response_sequence": 353,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/film.notiny.js?v=1.2",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-71",
+        "request_sequence": 216,
+        "response_sequence": 365,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/recent-comments.js?v=2.0.51",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-72",
+        "request_sequence": 218,
+        "response_sequence": 374,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/comment.js?v=1790702061",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-73",
+        "request_sequence": 220,
+        "response_sequence": 284,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/mention-render.js?v=2.0.51",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-10-72ef9ee139b073f5d69e686ac2c826acb60dce8bdfc306d9aa95791c4b0c32e8.js",
+        "layout": "isolated",
+        "layout_reason": "URL query, fragment, or credentials cannot select a canonical local module.",
+        "sha256": "9d72431b22adc5e5f1654261b506dff5e7d9f5dc18ff4bfc56ebfbeaf3aefb33",
+        "bytes": 1179,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-74",
+        "request_sequence": 222,
+        "response_sequence": 347,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/centrifugo-shared.js?v=1790702061",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-11-8aa052cd792e34a6e4bc624e1fbf31c307be3dbafb61dab06199fcbfaad06178.js",
+        "layout": "isolated",
+        "layout_reason": "URL query, fragment, or credentials cannot select a canonical local module.",
+        "sha256": "b54d05e7b2115e348003d96373f290dd3ba2e52afb059af8c9bbe84674d7ce33",
+        "bytes": 2629,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-75",
+        "request_sequence": 224,
+        "response_sequence": 415,
+        "status": 200
+      },
+      "url": "https://cdn.jsdelivr.net/npm/centrifuge@5.5.3/dist/centrifuge.min.js",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-12-dfe7032fa4af2be5262c760125a1c2bf9a784466e3fed022e2bfee251c88f819.js",
+        "layout": "isolated",
+        "layout_reason": "URL path is not an ordinary portable JavaScript module path.",
+        "sha256": "8ef74ea2f0acee0734bd5bf0deb6fcac1344eb8c24b821685cbac9b8bd74a432",
+        "bytes": 54312,
+        "media_type": "application/javascript; charset=utf-8",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-76",
+        "request_sequence": 226,
+        "response_sequence": 298,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/theme-toggle.js?v=2.0.51",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-13-845596a766bcbd6d2f31ee8dc59df06a781d555ade2a2e9310e346e10dcb489e.js",
+        "layout": "isolated",
+        "layout_reason": "URL query, fragment, or credentials cannot select a canonical local module.",
+        "sha256": "94d188986cc44bd70bec2a0ef08b6956a67f46446b49da4acd66c6747b239e4c",
+        "bytes": 3093,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-77",
+        "request_sequence": 228,
+        "response_sequence": 350,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/schedule.js?v=2.0.51",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-78",
+        "request_sequence": 230,
+        "response_sequence": 342,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/jquery.cookie.js?v=2.0.51",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-79",
+        "request_sequence": 232,
+        "response_sequence": 427,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/home-v1.js?v=2.0.51",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-16-abbdcddbf1879b6c9d1a80226f7b9b4f0ba9e25386524f803454536c618b98fb.js",
+        "layout": "isolated",
+        "layout_reason": "URL query, fragment, or credentials cannot select a canonical local module.",
+        "sha256": "af12e161e9e7c0e0d12bb015a8ad2b677fb24b3a32c0c989e7e0cdb6250dc88f",
+        "bytes": 14260,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-80",
+        "request_sequence": 234,
+        "response_sequence": 356,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/fx/util.js?v=2.0.51",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-81",
+        "request_sequence": 236,
+        "response_sequence": 362,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/jquery.md5.js?v=2.0.51",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-82",
+        "request_sequence": 238,
+        "response_sequence": 368,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/jquery.raty.js?v=2.0.51",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-83",
+        "request_sequence": 240,
+        "response_sequence": 340,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/bootstrap.min.js?v=2.0.51",
+      "content": {
+        "state": "exported",
+        "relative_path": "isolated/source-20-17ca8a540c6196098d0cd069be97805406a9b56e6e15cc27d8572eb5a6442add.js",
+        "layout": "isolated",
+        "layout_reason": "URL query, fragment, or credentials cannot select a canonical local module.",
+        "sha256": "e7ed36ceee5450b4243bbc35188afabdfb4280c7c57597001de0ed167299b01b",
+        "bytes": 48944,
+        "media_type": "application/javascript",
+        "redacted": false,
+        "representation": "playwright-response-body-bytes"
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-84",
+        "request_sequence": 242,
+        "response_sequence": 371,
+        "status": 200
+      },
+      "url": "https://animevietsub.bid/statics/default/js/04538.default.include-footer.2dcd18.js?v=2.0.51-112026",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Network content exceeds the 16 concurrent-read budget."
+      }
+    },
+    {
+      "source": {
+        "kind": "scenario-response",
+        "transaction_id": "request-85",
+        "request_sequence": 244,
+        "response_sequence": 410,
+        "status": 200
+      },
+      "url": "https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js",
+      "content": {
+        "state": "unavailable",
+        "reason": "body-read-failed",
+        "message": "Body exceeds the 64 KiB retained-content budget."
+      }
+    }
+  ],
+  "limitations": [
+    "Event sequence records provider receipt order; simultaneous browser causality is not inferred.",
+    "Network content is retained only when selected; Playwright response-body bytes are API results and are not guaranteed to match wire bytes.",
+    "Request bytes are limited to what Playwright exposes; not_exposed does not establish body absence or multipart file coverage.",
+    "Network content reads settle within 5 seconds each and the observer does not request bodies from unfinished responses.",
+    "Captured response-body bytes are the result of Playwright's Response.body() API. Playwright may satisfy that API with a credentialed follow-up load of the request URL when CDP has no body, so transaction and event links do not verify that retained bytes came from the original network transaction.",
+    "Playwright scenario events do not expose request initiator stacks; receipt order does not prove causality.",
+    "Storage values are hashed only after declared-secret redaction.",
+    "Some selected network content was unavailable; per-transaction content states retain the reason.",
+    "Network content exceeds the 16 concurrent-read budget.",
+    "Browser event collection reached its resource budget; omitted events and descendant observations are unknown.",
+    "Only script bytes retained in this capture are exported. Sources are not refetched or executed, and a response or Debugger source does not prove execution.",
+    "Ordinary unambiguous URL paths preserve relative module layouts by origin, including case-distinct spellings. Query variants, exact path collisions, file/directory prefixes, inline sources, and unrepresentable paths are isolated. A case-distinct pair is isolated only when the destination filesystem cannot store both spellings; the record names that pair. Browser module relationships of isolated paths remain unknown.",
+    "Local JavaScript analysis does not implement browser import maps, root-relative URL resolution, remote URL loading, or browser runtime behavior. It may strip import queries and fragments; isolated variants are not canonical targets.",
+    "Source-map declarations are retained as metadata. No source maps or missing dependencies are fetched or reconstructed.",
+    "Scenario response bytes preserve the output of Playwright's Response.body() API; any source-body provenance caveat from the capture is retained in this manifest. Debugger sources are the exposed text encoded as UTF-8. Redacted bytes are exported exactly as retained, and may no longer parse as JavaScript."
+  ]
+}

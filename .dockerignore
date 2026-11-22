@@ -1,0 +1,10 @@
+.git
+target
+**/target
+rea_evidence.json
+*.ts
+*.mp4
+*.m3u8
+sources
+captured_scripts
+web-anime-redesign

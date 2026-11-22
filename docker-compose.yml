@@ -1,0 +1,13 @@
+services:
+  avs-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: avs-direct-m3u8-api:latest
+    container_name: avs-direct-m3u8-api
+    restart: unless-stopped
+    environment:
+      - PORT=8095
+    ports:
+      - "127.0.0.1:8095:8095"
+      - "172.18.0.1:8095:8095"
