@@ -1,0 +1,12 @@
+# Build & Runtime Artifacts
+target/
+**/target/
+__pycache__/
+*.pyc
+
+# Large local evidence & test media (>100MB / video files)
+rea_evidence.json
+*.ts
+*.mp4
+*.html
+make_sample_clip.py
