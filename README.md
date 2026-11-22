@@ -16,14 +16,17 @@ Bộ công cụ giải mã tĩnh 2 lớp mật mã của player `stream.googleap
 ```text
 ├── README.md                       # Hướng dẫn sử dụng chi tiết
 ├── API_SPEC.md                     # Đặc tả toàn bộ Client-side API & giao thức giải mã
+├── Dockerfile                      # Multi-stage Docker build (Rust -> debian:bookworm-slim ~25MB)
+├── docker-compose.yml              # Cấu hình chạy container tự động khởi động lại
 ├── direct_m3u8_extractor.py        # Module giải mã viết bằng Python thuần
 ├── direct_cdn_playlist.m3u8        # File playlist mẫu đã giải mã hoàn chỉnh (311 segments Google CDN)
-├── rust_extractor/                 # Dự án Rust hiệu năng cao (CLI & Library Crate)
+├── captured_scripts/               # Toàn bộ các gói JS gốc gom về 1 thư mục duy nhất
+├── rust_extractor/                 # Dự án Rust hiệu năng cao (HTTP API Server, CLI & Library Crate)
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs                  # Lõi giải mã 2 lớp In-place (Zero-Regex, u32 index)
-│       └── main.rs                 # CLI binary
-└── sources/                        # Mã nguồn JS client-side trích xuất từ trang gốc
+│       └── main.rs                 # HTTP API Server đa luồng kèm bộ nhớ đệm TTL 30 phút & CLI
+└── sources/                        # Mã nguồn JS client-side đã làm sạch
 ```
 
 ---
@@ -48,6 +51,22 @@ Bộ công cụ giải mã tĩnh 2 lớp mật mã của player `stream.googleap
    - Kết quả thu được là link trực tiếp trên Google CDN: `https://lh3.googleusercontent.com/...=d`.
 4. **Nhúng khóa `#EXT-X-KEY` (AES-128) trực tiếp vào `.m3u8`:**
    - Tải các khóa 16-byte từ `/seg-key/...` một lần duy nhất trên Backend và nhúng thẳng vào `.m3u8` dưới dạng `URI="data:application/octet-stream;base64,..."`.
+
+---
+
+## Endpoint API Live (Docker trên Ubuntu)
+
+API đã được triển khai qua Docker (`avs-direct-m3u8-api`, chỉ chiếm **~3.36 MB RAM**) và gắn SSL tự động qua Caddy tại **`https://cdn1.lvn123.site`**:
+
+- **Giao diện Web Console & Trình phát thử nghiệm:**
+  `https://cdn1.lvn123.site/`
+- **Healthcheck:**
+  `GET https://cdn1.lvn123.site/health`
+- **Xuất trực tiếp file `.m3u8` (nhúng sẵn khóa AES-128 & 311 link `lh3.googleusercontent.com`):**
+  `GET https://cdn1.lvn123.site/api/playlist.m3u8?url=https://stream.googleapiscdn.com/player/225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06`
+  *(Hoặc truyền trực tiếp mã hash 64 ký tự: `GET https://cdn1.lvn123.site/api/playlist.m3u8?id=225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06`)*
+- **Xuất JSON đầy đủ (`player_id`, `segment_count`, `m3u8`, `m3u8_data_uri`):**
+  `GET https://cdn1.lvn123.site/api/extract?url=https://stream.googleapiscdn.com/player/225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06`
 
 ---
 
