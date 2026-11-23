@@ -38,7 +38,11 @@ const MovieSlider: React.FC<{
           effect="fade"
           fadeEffect={{ crossFade: true }}
           speed={1200}
-          thumbs={{ swiper: thumbsSwiper && !thumbsSwiper.destroyed ? thumbsSwiper : null }}
+          thumbs={{
+            swiper: thumbsSwiper && !thumbsSwiper.destroyed ? thumbsSwiper : null,
+            // Scroll the strip one thumbnail before the active one reaches its edge.
+            autoScrollOffset: 1,
+          }}
           autoplay={{
             delay: 5000,
             disableOnInteraction: false,
@@ -105,8 +109,9 @@ const MovieSlider: React.FC<{
 
                         <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2">
                           {movie.category.map((genre, i) => (
-                            /* FIX: Added 'pointer-events-auto' so these specific links can be clicked */
-                            <div key={i} className="pointer-events-auto">
+                            /* Fade slides are stacked: only the visible one may take clicks,
+                               otherwise a hidden slide's link sits on top of this one. */
+                            <div key={i} className={isActive ? "pointer-events-auto" : undefined}>
                               <Link
                                 href={paths.genre(genre.slug)}
                                 className="text-xs bg-white/10 hover:text-primary px-2 py-1 rounded transition-colors"
@@ -121,7 +126,11 @@ const MovieSlider: React.FC<{
                           {movie.content}
                         </p>
 
-                        <div className="pt-3 hidden items-center gap-4 lg:flex pointer-events-auto">
+                        <div
+                          className={`pt-3 hidden items-center gap-4 lg:flex ${
+                            isActive ? "pointer-events-auto" : ""
+                          }`}
+                        >
                           <Link
                             href={paths.film(movie.slug)}
                             className="h-16 w-16 flex items-center justify-center bg-[linear-gradient(39deg,rgb(var(--primary)),rgb(var(--primary-light)/1))] rounded-full  transition-colors bg-white"
@@ -147,9 +156,10 @@ const MovieSlider: React.FC<{
             onSwiper={setThumbsSwiper}
             modules={[Thumbs]}
             spaceBetween={15}
-            slidesPerView={6}
+            slidesPerView="auto"
             watchSlidesProgress={true}
-            className="top-slide-small lg:w-[650px] w-full flex"
+            // 585px = six 85px thumbnails and their five 15px gaps: none is ever cut in half.
+            className="top-slide-small lg:w-[585px] w-full flex"
           >
             {movies.map((movie, index) => (
               <SwiperSlide
@@ -161,8 +171,7 @@ const MovieSlider: React.FC<{
                   alt={`${movie.name} thumbnail`}
                   width={150}
                   height={85}
-                  className="h-full"
-                  style={{ objectFit: movie.backdrops.length > 0 ? "cover" : "contain" }}
+                  className="h-full w-full object-cover object-top"
                 />
               </SwiperSlide>
             ))}

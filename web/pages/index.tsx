@@ -13,14 +13,12 @@ import { useAsync } from "@/lib/useAsync";
 import type { CatalogResponse, HomeResponse } from "@/types/engine";
 
 const BannerSlider = dynamic(() => import("@/components/home/Banner"), { ssr: false });
-const MovieSlider = dynamic(() => import("@/components/Movie/MovieSlider"), { ssr: false });
 const MovieList = dynamic(() => import("@/components/Movie/MovieList"), { ssr: false });
 const TopList = dynamic(() => import("@/sections/home/Rank/list"), { ssr: false });
 const KeyArt = dynamic(() => import("@/components/Movie/KeyArt"), { ssr: false });
-const NewsList = dynamic(() => import("@/components/Movie/NewsList"), { ssr: false });
-const MovieShelf = dynamic(() => import("@/components/Movie/MovieShelf"), { ssr: false });
 
-type ShelfLayout = "list" | "shelf" | "key-art" | "slider";
+/** List items only carry a vertical poster, so the shelves use the poster layouts. */
+type ShelfLayout = "list" | "key-art";
 
 interface ShelfConfig {
   key: string;
@@ -49,10 +47,7 @@ const SectionHeader = ({ title, link }: { title: string; link: string }) => (
 );
 
 function ShelfContent({ layout, movies }: { layout: ShelfLayout; movies: IMovie[] }) {
-  if (layout === "shelf") return <MovieShelf movies={movies} />;
-  if (layout === "key-art") return <KeyArt movies={movies} />;
-  if (layout === "slider") return <MovieSlider movies={movies} />;
-  return <MovieList movies={movies} />;
+  return layout === "key-art" ? <KeyArt movies={movies} /> : <MovieList movies={movies} />;
 }
 
 /** Shelves below the fold, loaded one at a time as the reader scrolls to the end of the page. */
@@ -68,7 +63,7 @@ const LAZY_SHELVES: ShelfConfig[] = [
     key: "movies",
     title: "Anime Lẻ Mới Cập Nhật",
     href: paths.movies,
-    layout: "shelf",
+    layout: "list",
     load: () => getCatalog("movies"),
   },
   {
@@ -82,7 +77,7 @@ const LAZY_SHELVES: ShelfConfig[] = [
     key: "tinh-cam",
     title: "Anime Tình Cảm",
     href: paths.genre("tinh-cam"),
-    layout: "slider",
+    layout: "key-art",
     load: () => getGenre("tinh-cam"),
   },
   {
@@ -218,12 +213,12 @@ const HomePage: React.FC = () => {
       <div className="relative z-10 px-5 lg:px-6">
         <SectionHeader title="Mới Cập Nhật" link={paths.series} />
         <div className="mt-6">
-          <MovieSlider movies={latest} />
+          <MovieList movies={latest} />
         </div>
 
         <SectionHeader title="Sắp Chiếu" link={paths.upcoming} />
         <div className="mt-6">
-          <NewsList movies={upcoming} />
+          <MovieList movies={upcoming} />
         </div>
 
         <TopList movies={featured} />
@@ -237,13 +232,18 @@ const HomePage: React.FC = () => {
           </div>
         ))}
 
-        <div ref={setSentinel} className="h-24 w-full flex items-center justify-center mt-12 mb-20">
-          {isShelfLoading ? (
-            <Loader />
-          ) : queue.length > 0 ? (
-            <div className="text-gray-500 text-sm">Đang tải thêm nội dung...</div>
-          ) : null}
-        </div>
+        {(isShelfLoading || queue.length > 0) && (
+          <div
+            ref={setSentinel}
+            className="h-24 w-full flex items-center justify-center mt-12 mb-20"
+          >
+            {isShelfLoading ? (
+              <Loader />
+            ) : (
+              <div className="text-gray-500 text-sm">Đang tải thêm nội dung...</div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

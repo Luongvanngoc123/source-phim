@@ -223,8 +223,7 @@ const MovieSlider: React.FC<{ movies: IMovie[] }> = ({ movies }) => {
                   alt={movie.name}
                   loading="lazy"
 
-                  style={{ objectFit: "cover" }}
-                  className="rounded-xl w-full h-full object-cover"
+                  className="rounded-xl w-full aspect-[2/3] object-cover"
                 />
                 <div className="absolute bottom-0 left-0 justify-center w-full flex">
                   {movie.lang &&

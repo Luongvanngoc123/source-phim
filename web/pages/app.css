@@ -18,8 +18,10 @@ body {
   border: 2px solid white;
 }
 
-.swiper-thumb > .swiper-initialized > .swiper-wrapper {
-  justify-content: end;
+/* The hero thumbnails hug the right edge while they fit. An auto margin (unlike
+   justify-content: end) collapses once the strip overflows, so Swiper scrolls it from the start. */
+.swiper-thumb > .swiper-initialized > .swiper-wrapper > .swiper-slide:first-child {
+  margin-left: auto;
 }
 .swiper-thumb2 .swiper-slide-thumb {
   border: 2px solid transparent;
@@ -51,8 +53,9 @@ select {
 }
 
 @media (max-width: 1000px) {
-  .swiper-thumb > .swiper-initialized > .swiper-wrapper {
-    justify-content: center;
+  /* Centred on small screens, again only while the strip fits. */
+  .swiper-thumb > .swiper-initialized > .swiper-wrapper > .swiper-slide:last-child {
+    margin-right: auto !important;
   }
 }
 html {
