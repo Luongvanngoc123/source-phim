@@ -4,28 +4,37 @@ import dynamic from "next/dynamic";
 import Loader from "@/components/loading/list";
 import ErrorState from "@/components/State/ErrorState";
 import EmptyState from "@/components/State/EmptyState";
+import ContinueWatching from "@/components/home/ContinueWatching";
+import Recommendations from "@/components/home/Recommendations";
 import ICON from "@/types/icon";
 import { GRADIENTS } from "@/utils/Items";
-import { getCatalog, getGenre, getGenres, getHome, errorMessage } from "@/lib/engine";
+import { getGenres, getHome, errorMessage } from "@/lib/engine";
 import { toMovie } from "@/lib/adapter";
+import { getCatalogPage, type CatalogSpec } from "@/lib/catalog";
 import { paths } from "@/lib/paths";
 import { useAsync } from "@/lib/useAsync";
-import type { CatalogResponse, HomeResponse } from "@/types/engine";
+import type { HomeResponse } from "@/types/engine";
 
 const BannerSlider = dynamic(() => import("@/components/home/Banner"), { ssr: false });
 const MovieList = dynamic(() => import("@/components/Movie/MovieList"), { ssr: false });
+const MovieSlider = dynamic(() => import("@/components/Movie/MovieSlider"), { ssr: false });
+const MovieShelf = dynamic(() => import("@/components/Movie/MovieShelf"), { ssr: false });
+const NewsList = dynamic(() => import("@/components/Movie/NewsList"), { ssr: false });
 const TopList = dynamic(() => import("@/sections/home/Rank/list"), { ssr: false });
 const KeyArt = dynamic(() => import("@/components/Movie/KeyArt"), { ssr: false });
 
-/** List items only carry a vertical poster, so the shelves use the poster layouts. */
-type ShelfLayout = "list" | "key-art";
+/**
+ * "list" and "key-art" show vertical posters and suit every title. "slider", "shelf" and
+ * "news" show wide art, which only the film catalog has for its list items.
+ */
+type ShelfLayout = "list" | "key-art" | "slider" | "shelf" | "news";
 
 interface ShelfConfig {
   key: string;
   title: string;
   href: string;
   layout: ShelfLayout;
-  load: () => Promise<CatalogResponse>;
+  spec: CatalogSpec;
 }
 
 interface LoadedShelf extends ShelfConfig {
@@ -47,45 +56,63 @@ const SectionHeader = ({ title, link }: { title: string; link: string }) => (
 );
 
 function ShelfContent({ layout, movies }: { layout: ShelfLayout; movies: IMovie[] }) {
-  return layout === "key-art" ? <KeyArt movies={movies} /> : <MovieList movies={movies} />;
+  if (layout === "key-art") return <KeyArt movies={movies} />;
+  if (layout === "slider") return <MovieSlider movies={movies} />;
+  if (layout === "shelf") return <MovieShelf movies={movies} />;
+  if (layout === "news") return <NewsList movies={movies} />;
+  return <MovieList movies={movies} />;
 }
 
 /** Shelves below the fold, loaded one at a time as the reader scrolls to the end of the page. */
 const LAZY_SHELVES: ShelfConfig[] = [
   {
-    key: "series",
+    key: "kk-series",
+    title: "Phim Bộ Mới Cập Nhật",
+    href: paths.kkSeries,
+    layout: "slider",
+    spec: { source: "kk", list: "phim-bo" },
+  },
+  {
+    key: "kk-movies",
+    title: "Phim Lẻ Mới Cập Nhật",
+    href: paths.kkMovies,
+    layout: "shelf",
+    spec: { source: "kk", list: "phim-le" },
+  },
+  {
+    key: "anime-series",
     title: "Anime Bộ Mới Cập Nhật",
-    href: paths.series,
+    href: paths.animeSeries,
     layout: "list",
-    load: () => getCatalog("series"),
+    spec: { source: "avs", list: "series" },
   },
   {
-    key: "movies",
+    key: "kk-animation",
+    title: "Hoạt Hình",
+    href: paths.kkAnimation,
+    layout: "news",
+    spec: { source: "kk", list: "hoat-hinh" },
+  },
+  {
+    key: "anime-movies",
     title: "Anime Lẻ Mới Cập Nhật",
-    href: paths.movies,
+    href: paths.animeMovies,
     layout: "list",
-    load: () => getCatalog("movies"),
+    spec: { source: "avs", list: "movies" },
   },
   {
-    key: "hanh-dong",
+    key: "kk-tv-shows",
+    title: "TV Shows",
+    href: paths.kkTvShows,
+    layout: "slider",
+    spec: { source: "kk", list: "tv-shows" },
+  },
+  {
+    key: "anime-action",
     title: "Anime Hành Động",
-    href: paths.genre("hanh-dong"),
+    href: paths.topic("hanh-dong"),
     layout: "key-art",
-    load: () => getGenre("hanh-dong"),
-  },
-  {
-    key: "tinh-cam",
-    title: "Anime Tình Cảm",
-    href: paths.genre("tinh-cam"),
-    layout: "key-art",
-    load: () => getGenre("tinh-cam"),
-  },
-  {
-    key: "hai-huoc",
-    title: "Anime Hài Hước",
-    href: paths.genre("hai-huoc"),
-    layout: "list",
-    load: () => getGenre("hai-huoc"),
+    spec: { source: "avs", genre: "hanh-dong" },
   },
 ];
 
@@ -106,9 +133,9 @@ const HomePage: React.FC = () => {
     setIsShelfLoading(true);
     setQueue((current) => current.slice(1));
     try {
-      const response = await next.load();
-      if (response.items.length > 0) {
-        setShelves((current) => [...current, { ...next, movies: response.items.map(toMovie) }]);
+      const page = await getCatalogPage(next.spec);
+      if (page.items.length > 0) {
+        setShelves((current) => [...current, { ...next, movies: page.items }]);
       }
     } catch {
       // A failed shelf is skipped so the next sentinel intersection can continue the queue.
@@ -159,7 +186,7 @@ const HomePage: React.FC = () => {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mt-5">
             {displayedTopics.map((topic, index) => (
               <Link
-                href={paths.genre(topic.slug)}
+                href={paths.topic(topic.slug)}
                 scroll={false}
                 key={topic.slug}
                 className={`relative transform transition-transform duration-300 ease-out hover:-translate-y-2 overflow-hidden rounded-xl p-6 text-white bg-gradient-to-br ${GRADIENTS[index % GRADIENTS.length]}
@@ -194,7 +221,7 @@ const HomePage: React.FC = () => {
             )}
             {isTopicExpanded && (
               <Link
-                href={paths.genres}
+                href={paths.topics}
                 className={`relative transform transition-transform duration-300 ease-out hover:-translate-y-2 overflow-hidden rounded-xl p-6 text-white bg-gradient-to-br from-gray-600 to-gray-800
                   after:absolute after:inset-0 after:bg-[url(/images/wave.png)] after:bg-no-repeat after:opacity-30
                   after:[mask-image:linear-gradient(-45deg,black,transparent_40%)]
@@ -211,12 +238,14 @@ const HomePage: React.FC = () => {
       </div>
 
       <div className="relative z-10 px-5 lg:px-6">
-        <SectionHeader title="Mới Cập Nhật" link={paths.series} />
+        <ContinueWatching />
+
+        <SectionHeader title="Anime Mới Cập Nhật" link={paths.animeSeries} />
         <div className="mt-6">
           <MovieList movies={latest} />
         </div>
 
-        <SectionHeader title="Sắp Chiếu" link={paths.upcoming} />
+        <SectionHeader title="Anime Sắp Chiếu" link={paths.upcoming} />
         <div className="mt-6">
           <MovieList movies={upcoming} />
         </div>
@@ -232,7 +261,7 @@ const HomePage: React.FC = () => {
           </div>
         ))}
 
-        {(isShelfLoading || queue.length > 0) && (
+        {isShelfLoading || queue.length > 0 ? (
           <div
             ref={setSentinel}
             className="h-24 w-full flex items-center justify-center mt-12 mb-20"
@@ -243,6 +272,9 @@ const HomePage: React.FC = () => {
               <div className="text-gray-500 text-sm">Đang tải thêm nội dung...</div>
             )}
           </div>
+        ) : (
+          // The recommendation feed takes over once the fixed shelves are all on the page.
+          <Recommendations />
         )}
       </div>
     </div>

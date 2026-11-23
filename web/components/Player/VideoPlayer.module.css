@@ -1,0 +1,215 @@
+.player {
+  --art-theme: rgb(var(--primary));
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  outline: none;
+}
+
+.stage {
+  width: 100%;
+  height: 100%;
+}
+
+.player :global(.art-video-player) {
+  width: 100%;
+  height: 100%;
+  --art-theme: rgb(var(--primary));
+  --art-background-color: #050505;
+  --art-font-color: #fff;
+  --art-control-opacity: 0.94;
+}
+
+.player :global(.art-video) {
+  object-fit: contain;
+}
+
+.player :global(.art-bottom) {
+  z-index: 30;
+  padding: 0 14px 10px;
+}
+
+.player :global(.art-bottom .art-progress) {
+  margin-bottom: 7px;
+}
+
+.player :global(.art-bottom .art-controls) {
+  min-height: 38px;
+}
+
+.player :global(.art-control) {
+  color: #fff;
+}
+
+.player :global(.art-control:hover) {
+  color: rgb(var(--primary));
+}
+
+.player :global(.art-control-next-episode) {
+  max-width: 190px;
+}
+
+.player :global(.art-control-next-episode span) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player :global(.art-layer) {
+  z-index: 25;
+}
+
+.player :global(.avs-player-title) {
+  position: absolute;
+  top: 19px;
+  left: 18px;
+  max-width: calc(100% - 36px);
+  overflow: hidden;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 500;
+  opacity: 0;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 3px #000;
+  transform: translateY(-5px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+  white-space: nowrap;
+}
+
+.player :global(.art-video-player.art-control-show .avs-player-title),
+.player :global(.art-video-player.art-hover .avs-player-title) {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.player :global(.art-video-player .art-state) {
+  width: 68px;
+  height: 68px;
+  border: 2px solid rgb(var(--primary));
+  border-radius: 50%;
+  background: rgb(var(--primary));
+  color: #161616;
+  box-shadow: 0 5px 25px #0008;
+}
+
+.player :global(.art-video-player .art-state svg) {
+  width: 25px;
+  height: 25px;
+}
+
+.player :global(.avs-player-control) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 34px;
+  height: 34px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.player :global(.avs-player-control:hover) {
+  color: rgb(var(--primary));
+}
+
+.player :global(.avs-player-control span) {
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.player :global(.avs-player-next) {
+  max-width: 190px;
+  padding: 0 8px;
+}
+
+.player :global(.avs-player-next span) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgb(0 0 0 / 88%);
+  color: #fff;
+  font-size: 14px;
+  text-align: center;
+}
+
+.player :global(.art-notice) {
+  bottom: 65px;
+  left: 50%;
+  padding: 0;
+  transform: translateX(-50%);
+}
+
+.player :global(.art-notice .art-notice-inner) {
+  padding: 7px 12px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 78%);
+  font-size: 12px;
+}
+
+.spinner {
+  display: block;
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgb(255 255 255 / 28%);
+  border-top-color: rgb(var(--primary));
+  border-radius: 50%;
+  animation: player-spin 800ms linear infinite;
+}
+
+.retry {
+  border: 0;
+  border-radius: 4px;
+  background: rgb(var(--primary));
+  color: #161616;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 8px 18px;
+}
+
+@keyframes player-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 640px) {
+  .player :global(.art-bottom) {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .player :global(.avs-player-next span) {
+    display: none;
+  }
+
+  /*
+   * A phone has no room for these: double-tap seeks, the hardware keys set the volume.
+   * The selector repeats the library's own chain so it outranks its `display: flex`.
+   */
+  .player :global(.art-video-player .art-bottom .art-controls .art-control-backward-ten),
+  .player :global(.art-video-player .art-bottom .art-controls .art-control-forward-ten),
+  .player :global(.art-video-player .art-bottom .art-controls .art-control-volume),
+  .player :global(.art-video-player .art-bottom .art-controls .art-control-pip),
+  .player :global(.art-video-player .art-bottom .art-controls .art-control-fullscreenWeb) {
+    display: none;
+  }
+}

@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useState, Suspense } from "react";
 import dynamic from "next/dynamic";
+import { Toaster } from "react-hot-toast";
 import LoadingOverlay from "@/components/loading/loader";
 import type { ReactElement, ReactNode } from "react";
 import { AppProps } from "next/app";
+import { AuthProvider } from "@/providers/AuthProvider";
 
 export type NextPageWithLayout = {
   getLayout?: (page: ReactElement) => ReactNode;
@@ -39,15 +41,18 @@ const AppContent = ({ Component, pageProps }: AppPropsWithLayout) => {
 
   const getLayout = Component.getLayout ?? ((page) => page);
   return (
-    <>
-      {loading && <LoadingOverlay />}
-      <Suspense fallback={<LoadingOverlay />}>
-        <Layout>
-          {getLayout(<Component {...pageProps} />)}
-          <Footer />
-        </Layout>
-      </Suspense>
-    </>
+    <AuthProvider>
+      <>
+        {loading && <LoadingOverlay />}
+        <Suspense fallback={<LoadingOverlay />}>
+          <Layout>
+            {getLayout(<Component {...pageProps} />)}
+            <Footer />
+          </Layout>
+        </Suspense>
+        <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
+      </>
+    </AuthProvider>
   );
 };
 

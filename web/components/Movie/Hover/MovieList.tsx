@@ -123,7 +123,11 @@ function MovieListHover({
                   •
                 </span>
               )}
-              <Link href="#" key={i} className="text-[12px] space-x-2 py-1 transition-colors">
+              <Link
+                href={genre.href}
+                key={genre.slug}
+                className="text-[12px] space-x-2 py-1 transition-colors"
+              >
                 <span className="text-gray-200">
                   {(genre?.name || "")
                     .replace(/\s*phim\s*/gi, " ")

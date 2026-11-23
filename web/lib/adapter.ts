@@ -1,7 +1,8 @@
 import type { AnimeDetail, AnimeListItem, Episode, FeaturedItem } from "@/types/engine";
+import { paths } from "./paths";
 
 const ITEMS_PER_PAGE = 30;
-/** The source's cards render `lang` 0 as "Phụ đề"; every stream of the engine is VietSub. */
+/** The engine's streams are all Vietnamese subtitled. */
 const LANG_SUBTITLED = 0;
 
 /** "09/??" -> ["09", "?"]. Falls back to the number in a badge such as "TẬP 09". */
@@ -18,14 +19,17 @@ function decimal(text: string | null): number {
   return Number(text?.replace(",", ".")) || 0;
 }
 
+function categories(genres: { slug: string; name: string }[]): ICategory[] {
+  return genres.map((genre) => ({ ...genre, href: paths.topic(genre.slug) }));
+}
+
 export function toMovie(item: AnimeListItem | FeaturedItem): IMovie {
   const [episodeCurrent, episodeTotal] = splitProgress(item.progress, item.episode_badge);
   const banner = "banner" in item && item.banner ? item.banner : "";
-  // A countdown badge ("13h 12m 1s") would freeze on screen; only the plain label is shown.
   const upcomingLabel = item.countdown_seconds === null ? item.schedule_badge : null;
-  // Catalogs put a view count in this field ("Lượt xem: 1,491,367"); the schedule puts alternative titles.
   const subtitle = item.views_or_subtitle ?? "";
   return {
+    source: "avs",
     _id: item.slug,
     name: item.title,
     origin_name: subtitle.startsWith("Lượt xem") ? "" : subtitle,
@@ -41,13 +45,14 @@ export function toMovie(item: AnimeListItem | FeaturedItem): IMovie {
     lang: [LANG_SUBTITLED],
     year: Number(item.year) || 0,
     rating: decimal(item.rating),
-    category: item.genres,
+    category: categories(item.genres),
   };
 }
 
 export function detailToMovie(detail: AnimeDetail): IMovie {
   const [episodeCurrent, episodeTotal] = splitProgress(detail.duration);
   return {
+    source: "avs",
     _id: detail.slug,
     name: detail.title,
     origin_name: detail.sub_title ?? "",
@@ -63,7 +68,7 @@ export function detailToMovie(detail: AnimeDetail): IMovie {
     lang: [LANG_SUBTITLED],
     year: Number(detail.season_release?.match(/\d{4}/)?.[0]) || 0,
     rating: decimal(detail.rating),
-    category: detail.genres,
+    category: categories(detail.genres),
   };
 }
 
@@ -97,7 +102,45 @@ export function detailToEpisodes(detail: AnimeDetail): IEpisode[] {
     _id: episode.episode_id,
     name: episode.title,
     slug: episodeSlug(episode),
+    stream: { kind: "engine", url: episode.watch_url },
   }));
+}
+
+function present(value: string | null | undefined): value is string {
+  return Boolean(value?.trim());
+}
+
+export function detailToFilm(detail: AnimeDetail): IFilm {
+  const stats: string[] = [];
+  if (present(detail.rating_count)) stats.push(`${detail.rating_count} đánh giá`);
+  if (present(detail.views)) stats.push(detail.views);
+  if (present(detail.status)) stats.push(detail.status);
+  if (present(detail.age_rating)) stats.push(detail.age_rating);
+  if (present(detail.language)) stats.push(detail.language);
+
+  const facts: IFilm["facts"] = [];
+  if (present(detail.season_release))
+    facts.push({ label: "Mùa phát hành", value: detail.season_release });
+  if (present(detail.country)) facts.push({ label: "Quốc gia", value: detail.country });
+  if (present(detail.studio)) facts.push({ label: "Studio", value: detail.studio });
+  if (present(detail.director)) facts.push({ label: "Đạo diễn", value: detail.director });
+
+  const episodes = detailToEpisodes(detail);
+  const language = detail.language?.trim() || "VietSub";
+  return {
+    movie: detailToMovie(detail),
+    kind: detail.type === "movie" ? "movie" : "series",
+    stats,
+    facts,
+    schedule: detail.schedule?.trim() || "",
+    servers: episodes.length ? [{ name: language, episodes }] : [],
+    parts: detail.seasons.map((part) => ({
+      label: part.name,
+      title: part.title ?? part.name,
+      slug: part.slug,
+      active: part.active,
+    })),
+  };
 }
 
 /**

@@ -6,6 +6,9 @@ import { paths } from "@/lib/paths";
 
 interface EpisodeListProps {
   episodes: IEpisode[];
+  servers: IServer[];
+  currentServerIndex: number;
+  onServerChange: (serverIndex: number) => void;
   currentEpisodeId: string;
   slug: string;
   collapsed: boolean;
@@ -21,6 +24,9 @@ function rangeLabel(start: number, end: number): string {
 
 export default function EpisodeList({
   episodes,
+  servers,
+  currentServerIndex,
+  onServerChange,
   currentEpisodeId,
   slug,
   collapsed,
@@ -54,6 +60,21 @@ export default function EpisodeList({
             <i className="fa-solid fa-bars-staggered text-primary" />
             <span>Tập phim</span>
           </h2>
+          {servers.length > 1 && (
+            <div className="flex max-w-full flex-wrap gap-2" aria-label="Chọn máy chủ">
+              {servers.map((server, index) => (
+                <button
+                  key={`${server.name}-${index}`}
+                  type="button"
+                  aria-pressed={index === currentServerIndex}
+                  onClick={() => onServerChange(index)}
+                  className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${index === currentServerIndex ? "border-primary bg-primary/10 text-primary" : "border-gray-700 text-gray-400 hover:text-white"}`}
+                >
+                  {server.name}
+                </button>
+              ))}
+            </div>
+          )}
           {ranges.length > 1 && (
             <div className="flex max-w-full flex-wrap gap-2">
               {ranges.map((range, index) => {

@@ -113,7 +113,7 @@ const MovieSlider: React.FC<{
                                otherwise a hidden slide's link sits on top of this one. */
                             <div key={i} className={isActive ? "pointer-events-auto" : undefined}>
                               <Link
-                                href={paths.genre(genre.slug)}
+                                href={genre.href}
                                 className="text-xs bg-white/10 hover:text-primary px-2 py-1 rounded transition-colors"
                               >
                                 {genre.name}

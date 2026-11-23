@@ -10,19 +10,14 @@ import LoadingOverlay from "@/components/loading/loader";
 import EmptyState from "@/components/State/EmptyState";
 import ErrorState from "@/components/State/ErrorState";
 import ProposalGird from "@/components/Movie/ProposalGird";
-import { errorMessage, getAnime } from "@/lib/engine";
-import { detailToEpisodes, detailToMovie } from "@/lib/adapter";
-import { getRelated } from "@/lib/related";
+import SaveButton from "@/components/Account/SaveButton";
+import { errorMessage } from "@/lib/engine";
+import { getFilm, getRelated } from "@/lib/catalog";
+import { toFilmRef } from "@/lib/account";
 import { paths } from "@/lib/paths";
 import { useAsync } from "@/lib/useAsync";
 
 const EPISODES_PER_RANGE = 100;
-
-interface EpisodeItem {
-  _id: string;
-  slug: string;
-  label: string;
-}
 
 function text(value: string | null | undefined): value is string {
   return Boolean(value?.trim());
@@ -32,65 +27,61 @@ function FilmPage() {
   const router = useRouter();
   const slug =
     router.isReady && typeof router.query.slug === "string" ? router.query.slug : undefined;
-  const film = useAsync(slug ? () => getAnime(slug) : null, [slug]);
-  const detail = film.data;
-  const related = useAsync(detail ? () => getRelated(detail) : null, [detail]);
+  const filmState = useAsync(slug ? () => getFilm(slug) : null, [slug]);
+  const film = filmState.data;
+  const related = useAsync(film ? () => getRelated(film) : null, [film]);
+  const [activeServer, setActiveServer] = useState(0);
   const [activeRange, setActiveRange] = useState(0);
 
-  const movie = detail ? detailToMovie(detail) : null;
-  const episodes = useMemo<EpisodeItem[]>(() => {
-    if (!detail) return [];
-    const mapped = detailToEpisodes(detail);
-    return mapped.map((episode, index) => ({
-      _id: episode._id,
-      slug: episode.slug,
-      label: detail.episodes[index]?.episode || episode.name,
-    }));
-  }, [detail]);
+  useEffect(() => {
+    setActiveServer(0);
+    setActiveRange(0);
+  }, [film?.movie.slug]);
 
+  const server = film?.servers[activeServer];
   const episodeRanges = useMemo(() => {
-    const ranges: EpisodeItem[][] = [];
-    for (let index = 0; index < episodes.length; index += EPISODES_PER_RANGE) {
-      ranges.push(episodes.slice(index, index + EPISODES_PER_RANGE));
+    if (!server) {
+      return [];
+    }
+    const ranges: IEpisode[][] = [];
+    for (let index = 0; index < server.episodes.length; index += EPISODES_PER_RANGE) {
+      ranges.push(server.episodes.slice(index, index + EPISODES_PER_RANGE));
     }
     return ranges;
-  }, [episodes]);
+  }, [server]);
 
-  useEffect(() => {
-    setActiveRange(0);
-  }, [detail?.slug]);
-
-  if (!slug || film.loading) {
+  if (!slug || filmState.loading) {
     return <LoadingOverlay />;
   }
 
-  if (film.error) {
-    if (film.error.status === 404) {
+  if (filmState.error) {
+    if (filmState.error.status === 404) {
       return <EmptyState message="Không tìm thấy phim này." />;
     }
-    return <ErrorState message={errorMessage(film.error)} onRetry={film.reload} />;
+    return <ErrorState message={errorMessage(filmState.error)} onRetry={filmState.reload} />;
   }
 
-  if (!detail || !movie) {
+  if (!film) {
     return <EmptyState message="Phim này chưa có dữ liệu." />;
   }
 
+  const movie = film.movie;
   const poster = movie.poster_url;
-  const backdrop = movie.thumb_url || poster;
-  const firstEpisode = episodes[0];
+  const backdrop = movie.backdrops[0] || movie.thumb_url || poster;
+  const firstEpisode = film.servers[0]?.episodes[0];
   const visibleEpisodes = episodeRanges[activeRange] ?? [];
-  const seoDescription = detail.description.slice(0, 160);
+  const description = movie.content.slice(0, 160);
 
   return (
     <>
       <NextSeo
-        title={detail.title}
-        description={seoDescription}
+        title={movie.name}
+        description={description}
         openGraph={{
           type: "video.movie",
-          title: detail.title,
-          description: seoDescription,
-          images: poster ? [{ url: poster, alt: detail.title }] : [],
+          title: movie.name,
+          description,
+          images: poster ? [{ url: poster, alt: movie.name }] : [],
         }}
       />
 
@@ -111,97 +102,77 @@ function FilmPage() {
               {poster && (
                 <div className={styles.l}>
                   <div className={styles.n}>
-                    <Image
-                      src={poster}
-                      alt={detail.title}
-                      fill
-                      className={styles.x}
-                      sizes="155px"
-                    />
+                    <Image src={poster} alt={movie.name} fill className={styles.x} sizes="155px" />
                   </div>
                 </div>
               )}
 
-              <h1 className={styles.o}>{detail.title}</h1>
-              {text(detail.sub_title) && <h2 className={styles.q}>{detail.sub_title}</h2>}
+              <h1 className={styles.o}>{movie.name}</h1>
+              {text(movie.origin_name) && <h2 className={styles.q}>{movie.origin_name}</h2>}
 
               <div className={styles.k}>
                 <div className={styles.j}>
-                  {text(detail.rating) && (
+                  {movie.rating > 0 && (
                     <span className={styles.s}>
-                      <i className="fa-solid fa-star"></i>{" "}
-                      <span className={styles.y}>{detail.rating}</span>
+                      <i className="fa-solid fa-star" />{" "}
+                      <span className={styles.y}>{movie.rating.toFixed(1)}</span>
                     </span>
                   )}
-                  {text(detail.rating_count) && (
-                    <span className={styles.r}>{detail.rating_count} đánh giá</span>
-                  )}
-                  {text(detail.views) && <span className={styles.r}>{detail.views}</span>}
-                  {text(detail.status) && <span className={styles.r}>{detail.status}</span>}
-                  {text(detail.quality) && <span className={styles.u}>{detail.quality}</span>}
-                  {text(detail.age_rating) && <span className={styles.r}>{detail.age_rating}</span>}
-                  {text(detail.language) && <span className={styles.r}>{detail.language}</span>}
+                  {text(movie.quality) && <span className={styles.u}>{movie.quality}</span>}
+                  {film.stats.map((stat) => (
+                    <span className={styles.r} key={stat}>
+                      {stat}
+                    </span>
+                  ))}
                 </div>
 
-                {detail.genres.length > 0 && (
+                {movie.category.length > 0 && (
                   <div className={styles.t}>
-                    {detail.genres.map((genre) => (
+                    {movie.category.map((category) => (
                       <Link
                         scroll={false}
-                        key={genre.slug}
-                        href={paths.genre(genre.slug)}
+                        key={category.slug}
+                        href={category.href}
                         className={styles.w}
                       >
-                        {genre.name}
+                        {category.name}
                       </Link>
                     ))}
                   </div>
                 )}
 
-                {text(detail.duration) && (
+                {text(movie.episode_current) && (
                   <div className={styles.v}>
                     <div className={styles.z}>
-                      <span>Tiến độ: {detail.duration}</span>
+                      <span>Tiến độ: {movie.episode_current}</span>
                     </div>
                   </div>
                 )}
 
                 <div className={styles.as}>
-                  {text(detail.description) && (
+                  {text(movie.content) && (
                     <div className={styles.ad}>
                       <div className={styles.ag}>Giới thiệu</div>
-                      <p className={styles.ah}>{detail.description}</p>
+                      <p className={styles.ah}>{movie.content}</p>
                     </div>
                   )}
                   <div className={styles.af}>
-                    {text(detail.season_release) && (
-                      <div className="flex items-center gap-3">
-                        <span className="font-medium">Phát hành:</span>
-                        <p className="text-gray-400">{detail.season_release}</p>
+                    {film.facts.map((fact) => (
+                      <div className="flex items-start gap-3" key={fact.label}>
+                        <span className="font-medium whitespace-nowrap">{fact.label}:</span>
+                        {fact.href ? (
+                          <Link href={fact.href} className="text-gray-400 hover:text-primary">
+                            {fact.value}
+                          </Link>
+                        ) : (
+                          <p className="text-gray-400">{fact.value}</p>
+                        )}
                       </div>
-                    )}
-                    {text(detail.schedule) && (
+                    ))}
+                    {text(film.schedule) && (
                       <div className="flex items-start gap-3">
                         <span className="font-medium whitespace-nowrap">Lịch chiếu:</span>
-                        <p className="text-gray-400">{detail.schedule}</p>
-                      </div>
-                    )}
-                    {text(detail.country) && (
-                      <div className="flex items-center gap-3">
-                        <span className="font-medium whitespace-nowrap">Quốc gia:</span>
-                        <p className="text-gray-400">{detail.country}</p>
-                      </div>
-                    )}
-                    {text(detail.studio) && (
-                      <div className="flex items-start gap-3">
-                        <span className="font-medium whitespace-nowrap">Sản xuất:</span>
-                        <p className="text-gray-400">{detail.studio}</p>
-                      </div>
-                    )}
-                    {text(detail.director) && (
-                      <div className="flex items-start gap-3">
-                        <span className="font-medium whitespace-nowrap">Đạo diễn:</span>
-                        <p className="text-gray-400">{detail.director}</p>
+                        <p className="text-gray-400">{film.schedule}</p>
                       </div>
                     )}
                   </div>
@@ -212,26 +183,33 @@ function FilmPage() {
 
           <div className="lg:col-span-8">
             <div className="lg:backdrop-blur-[20px] px-0 lg:px-8 pt-6 pb-6 lg:shadow-[0_15px_15px_0_rgba(0,0,0,0.125)] lg:rounded-2xl lg:bg-[rgba(255,255,255,.05)]">
-              <div className="flex text-white items-center">
-                {firstEpisode ? (
-                  <Link scroll={false} href={paths.watch(slug, firstEpisode.slug)}>
-                    <button className="px-20 py-3 lg:px-8 lg:py-3.5 text-nowrap w-auto flex items-center space-x-3 justify-center text-black font-medium rounded-full bg-[linear-gradient(39deg,rgb(var(--primary)),rgb(211,255,221))] hover:opacity-90 transition-opacity">
-                      <i className="fa-solid fa-play text-sm lg:text-base" />
-                      <span className="text-base lg:text-lg">Xem ngay</span>
-                    </button>
+              <div className="flex flex-wrap gap-3 text-white items-center">
+                {firstEpisode && slug && (
+                  <Link
+                    scroll={false}
+                    href={paths.watch(slug, firstEpisode.slug)}
+                    className="px-20 py-3 lg:px-8 lg:py-3.5 text-nowrap w-auto flex items-center space-x-3 justify-center text-black font-medium rounded-full bg-[linear-gradient(39deg,rgb(var(--primary)),rgb(211,255,221))] hover:opacity-90 transition-opacity"
+                  >
+                    <i className="fa-solid fa-play text-sm lg:text-base" />
+                    <span className="text-base lg:text-lg">Xem ngay</span>
                   </Link>
-                ) : text(detail.schedule) ? (
-                  <p className="text-gray-300">{detail.schedule}</p>
-                ) : null}
+                )}
+                <SaveButton
+                  film={toFilmRef(movie)}
+                  className="rounded-full border border-white/20 px-5 py-3 text-white transition-colors hover:border-primary hover:text-primary"
+                />
+                {!firstEpisode && text(film.schedule) && (
+                  <p className="text-gray-300">{film.schedule}</p>
+                )}
               </div>
             </div>
 
             <div className="mt-6 px-5 lg:px-10">
-              {detail.seasons.length > 0 && (
+              {film.parts.length > 0 && (
                 <div className="mb-8">
                   <h3 className="text-white font-semibold text-xl mb-4">Các phần</h3>
                   <div className="flex flex-wrap gap-3">
-                    {detail.seasons.map((part) => (
+                    {film.parts.map((part) => (
                       <Link
                         key={part.slug}
                         href={paths.film(part.slug)}
@@ -242,9 +220,8 @@ function FilmPage() {
                             : "border-white/10 bg-white/5 text-gray-300 hover:text-primary",
                         )}
                       >
-                        <span>{part.name}</span>
-                        {text(part.title) && <span className="ml-2">{part.title}</span>}
-                        <span className="sr-only">{part.type}</span>
+                        {part.label}
+                        <span className="ml-2">{part.title}</span>
                       </Link>
                     ))}
                   </div>
@@ -253,28 +230,47 @@ function FilmPage() {
 
               <div>
                 <h3 className="text-white font-semibold text-xl mb-4">Tập phim</h3>
+                {film.servers.length > 1 && (
+                  <div className="mb-5 flex flex-wrap gap-2" aria-label="Chọn máy chủ">
+                    {film.servers.map((item, index) => (
+                      <button
+                        type="button"
+                        key={`${item.name}-${index}`}
+                        aria-pressed={index === activeServer}
+                        onClick={() => {
+                          setActiveServer(index);
+                          setActiveRange(0);
+                        }}
+                        className={clsx(
+                          "rounded-md px-3 py-2 text-sm",
+                          index === activeServer
+                            ? "bg-primary text-bg-body"
+                            : "bg-white/10 text-gray-300 hover:text-white",
+                        )}
+                      >
+                        {item.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {episodeRanges.length > 1 && (
                   <div className="flex flex-wrap gap-2 mb-5" aria-label="Chọn nhóm tập">
-                    {episodeRanges.map((range, index) => {
-                      const first = range[0]?.label;
-                      const last = range[range.length - 1]?.label;
-                      return (
-                        <button
-                          type="button"
-                          aria-pressed={activeRange === index}
-                          key={`${first}-${last}`}
-                          onClick={() => setActiveRange(index)}
-                          className={clsx(
-                            "rounded-md px-3 py-2 text-sm",
-                            activeRange === index
-                              ? "bg-primary text-bg-body"
-                              : "bg-white/10 text-gray-300 hover:text-white",
-                          )}
-                        >
-                          {first} – {last}
-                        </button>
-                      );
-                    })}
+                    {episodeRanges.map((range, index) => (
+                      <button
+                        type="button"
+                        aria-pressed={activeRange === index}
+                        key={`${range[0]?.slug}-${range[range.length - 1]?.slug}`}
+                        onClick={() => setActiveRange(index)}
+                        className={clsx(
+                          "rounded-md px-3 py-2 text-sm",
+                          activeRange === index
+                            ? "bg-primary text-bg-body"
+                            : "bg-white/10 text-gray-300 hover:text-white",
+                        )}
+                      >
+                        {range[0]?.name} – {range[range.length - 1]?.name}
+                      </button>
+                    ))}
                   </div>
                 )}
 
@@ -283,15 +279,14 @@ function FilmPage() {
                 ) : (
                   <div className="grid mb-12 mt-8 grid-cols-4 lg:grid-cols-6 gap-4 w-full">
                     {visibleEpisodes.map((episode) => (
-                      <div key={episode._id}>
-                        <Link
-                          href={paths.watch(slug, episode.slug)}
-                          className="flex hover:text-primary items-center justify-center py-2.5 md:py-3 lg:py-4 px-1 gap-2 rounded-md bg-[#1c2343]"
-                        >
-                          <i className="fa-solid fa-play text-xs" />
-                          <span>{episode.label}</span>
-                        </Link>
-                      </div>
+                      <Link
+                        key={episode._id}
+                        href={paths.watch(movie.slug, episode.slug)}
+                        className="flex hover:text-primary items-center justify-center py-2.5 md:py-3 lg:py-4 px-1 gap-2 rounded-md bg-[#1c2343]"
+                      >
+                        <i className="fa-solid fa-play text-xs" />
+                        <span>{episode.name}</span>
+                      </Link>
                     ))}
                   </div>
                 )}

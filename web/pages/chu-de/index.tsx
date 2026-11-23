@@ -34,7 +34,7 @@ export default function DanhSachChuDe() {
             <div className={styles.list}>
               {topics.map((topic, index) => (
                 <Link
-                  href={paths.genre(topic.slug)}
+                  href={paths.topic(topic.slug)}
                   key={topic.slug}
                   className={clsx(styles.d, GRADIENTS[index % GRADIENTS.length])}
                 >

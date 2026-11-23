@@ -25,7 +25,10 @@ Bộ công cụ giải mã tĩnh 2 lớp mật mã của player `stream.googleap
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs                  # Lõi giải mã 2 lớp In-place (Zero-Regex, u32 index)
-│       └── main.rs                 # HTTP API Server đa luồng kèm bộ nhớ đệm TTL 30 phút & CLI
+│       ├── main.rs                 # HTTP API Server đa luồng kèm bộ nhớ đệm TTL 30 phút & CLI
+│       ├── http.rs                 # Đọc request có giới hạn (header 16 KiB, body 32 KiB) và ghi response
+│       ├── store.rs                # Kho tài khoản SQLite (người dùng, phiên, phim đã lưu, tiến độ xem)
+│       └── accounts.rs             # API tài khoản: Argon2id, cookie phiên, kiểm tra Origin, giới hạn tần suất
 ├── web/                            # Giao diện web (Next.js 16, xuất tĩnh ra web/out); engine Rust phục vụ trực tiếp
 └── sources/                        # Mã nguồn JS client-side đã làm sạch
 ```
@@ -105,14 +108,80 @@ Trang nguồn đổi tên miền mỗi khi tên miền đang dùng bị chặn. 
 
 ## Giao diện web (Next.js xuất tĩnh, do engine Rust phục vụ)
 
-Giao diện nằm ở `web/`: một ứng dụng Next.js 16 (pages router) được build một lần thành file tĩnh (`web/out`). Lúc chạy, máy chủ chỉ có **một tiến trình Rust**: engine vừa trả API vừa trả file của giao diện. Không có Node, Java, MongoDB hay Redis.
+Giao diện nằm ở `web/`: một ứng dụng Next.js 16 (pages router) được build một lần thành file tĩnh (`web/out`). Lúc chạy, máy chủ chỉ có **một tiến trình Rust**: engine vừa trả API vừa trả file của giao diện. Không có Node, Java, MongoDB hay Redis; tài khoản nằm trong một file SQLite do chính engine mở.
 
 | Thành phần | Việc nó làm |
 |---|---|
-| `web/` | Trang chủ, Anime bộ, Anime lẻ, Sắp chiếu, thể loại, mùa, chủ đề, tìm kiếm, lịch chiếu, chi tiết phim, trang xem (`hls.js` + `DirectGoogleCdnLoader`) |
-| Rust engine | Cào dữ liệu, giải mã `.m3u8`, proxy ảnh `/data/**`, trả file tĩnh trong `WEB_ROOT` |
+| `web/` | Trang chủ, danh sách và bộ lọc của hai nguồn phim, tìm kiếm có gợi ý khi đang gõ, lịch chiếu, chi tiết phim, trang xem, tài khoản, phim đã lưu, xem tiếp, đề xuất |
+| Rust engine | Cào dữ liệu anime, giải mã `.m3u8`, proxy ảnh `/data/**`, API tài khoản, trả file tĩnh trong `WEB_ROOT` |
 
-Trình duyệt chỉ gọi `/api/...` cùng origin. Ảnh poster/banner được tải thẳng từ URL `https://cdn1.lvn123.site/data/...` có sẵn trong JSON; segment video được tải thẳng từ `lh3.googleusercontent.com`.
+Trình duyệt gọi `/api/...` cùng origin cho anime và tài khoản. Ảnh poster/banner anime được tải thẳng từ URL `https://cdn1.lvn123.site/data/...` có sẵn trong JSON; segment video được tải thẳng từ `lh3.googleusercontent.com`.
+
+### Hai nguồn phim
+
+| Nguồn | Nội dung | Trình duyệt lấy dữ liệu từ đâu | Mã phim |
+|---|---|---|---|
+| AnimeVietSub | Anime bộ, anime lẻ, sắp chiếu, chủ đề, mùa, lịch chiếu | engine (`/api/...`) | slug gốc, ví dụ `black-clover-2nd-season-a6073` |
+| KKPhim | Phim bộ, phim lẻ, hoạt hình, TV shows, thể loại, quốc gia | thẳng tới `https://phimapi.com` (API công khai, có CORS `*`) | `kk_<slug>`, ví dụ `kk_bok-soo-tro-ve` |
+
+- Engine không proxy KKPhim: máy chủ không tốn băng thông hay CPU cho nguồn này, và không mở thêm đường gọi ra ngoài nào ở phía máy chủ. Gốc API đặt bằng `NEXT_PUBLIC_KK_API` lúc build.
+- `web/lib/catalog.ts` là lớp chung: `getFilm`, `getCatalogPage`, `searchFilms`, `suggestFilms`, `getRelated`. Trang và component không gọi thẳng hai nguồn.
+- Tập của KKPhim có slug `sv<số máy chủ>-<slug tập>` (ví dụ `/phim/kk_bok-soo-tro-ve/sv0-tap-01`); tập anime giữ slug gốc.
+
+| Đường dẫn | Nội dung |
+|---|---|
+| `/phim-bo`, `/phim-le`, `/hoat-hinh`, `/tv-shows` | Danh sách KKPhim, lọc theo thể loại, quốc gia, năm, ngôn ngữ, sắp xếp (tham số nằm trên URL) |
+| `/the-loai/<slug>`, `/quoc-gia/<slug>` | Thể loại và quốc gia của KKPhim |
+| `/anime-bo`, `/anime-le`, `/sap-chieu`, `/chu-de`, `/chu-de/<slug>`, `/mua/<slug>`, `/lich-chieu` | Danh sách anime |
+| `/tim-kiem?q=` | Kết quả của cả hai nguồn |
+| `/phim/<mã phim>`, `/phim/<mã phim>/<tập>` | Chi tiết phim và trang xem |
+| `/tai-khoan`, `/phim-da-luu`, `/xem-tiep` | Tài khoản, phim đã lưu, phim đang xem dở |
+
+### Trình phát và bỏ đoạn quảng cáo
+
+Trình phát là [ArtPlayer](https://artplayer.org) (giấy phép MIT) phát HLS bằng `hls.js`, giao diện tiếng Việt: lùi/tiến 10 giây, tập sau, tốc độ phát, hình trong hình, toàn màn hình, phím tắt (Space, ←, →, F, M), chạm hai lần để tua trên điện thoại, và nhớ vị trí đang xem.
+
+- **Anime:** playlist lấy từ `/api/playlist.m3u8`; mỗi segment trên `googleusercontent.com` được tải nguyên file rồi cắt bỏ 128 byte đầu (không gửi header `Range`, nên không phát sinh preflight CORS).
+- **KKPhim:** playlist tải thẳng từ máy chủ video của nguồn. Nguồn chèn quảng cáo vào giữa phim bằng các đoạn nằm giữa hai thẻ `#EXT-X-DISCONTINUITY` có segment ở thư mục khác thư mục của phim. `web/lib/adfilter.ts` (`stripAdBreaks`) bỏ các đoạn đó ngay khi `hls.js` nhận playlist, trước lúc phát:
+  - thư mục chứa nhiều thời lượng nhất là thư mục của phim;
+  - một đoạn bị bỏ khi mọi segment của nó nằm ngoài thư mục đó và đoạn dài không quá 2 phút;
+  - nếu tổng phần định bỏ vượt 1/5 thời lượng thì giữ nguyên playlist (thà còn quảng cáo hơn là mất phim);
+  - `#EXT-X-KEY` và `#EXT-X-MAP` đang có hiệu lực được ghi lại sau chỗ cắt.
+
+  Trình phát báo "Đã bỏ qua m:ss quảng cáo". Kiểm thử: `cd web && node --test lib/adfilter.test.ts` (playlist mẫu thật nằm ở `web/lib/__fixtures__/`). Nếu nguồn đổi cách chèn (ví dụ đặt quảng cáo cùng thư mục với phim) thì đoạn quảng cáo sẽ không bị bỏ; lúc đó cần thêm playlist mẫu mới và sửa luật.
+
+### Tài khoản, phim đã lưu, xem tiếp
+
+Tài khoản do engine quản lý, lưu trong `DATA_DIR/accounts.db` (SQLite, chế độ WAL). Người dùng đăng ký bằng tên đăng nhập và mật khẩu, không cần e-mail; vì vậy không có luồng "quên mật khẩu" (đổi mật khẩu trong `/tai-khoan` khi còn đăng nhập).
+
+| Endpoint | Việc nó làm |
+|---|---|
+| `POST /api/auth/register` `{username, password, display_name?}` | Tạo tài khoản và đăng nhập luôn |
+| `POST /api/auth/login` `{username, password}` | Đăng nhập |
+| `POST /api/auth/logout` | Xoá phiên hiện tại |
+| `GET /api/auth/me` | Người dùng của phiên hiện tại (`401` nếu chưa đăng nhập) |
+| `POST /api/auth/profile` `{display_name}` | Đổi tên hiển thị |
+| `POST /api/auth/password` `{current_password, new_password}` | Đổi mật khẩu, xoá mọi phiên khác |
+| `GET` / `PUT {film}` / `DELETE ?id=` `/api/me/favorites` | Phim đã lưu (tối đa 500 phim mỗi tài khoản) |
+| `GET [?id=]` / `PUT {film, episode, position, duration}` / `DELETE ?id=` `/api/me/progress` | Vị trí đang xem của từng tập (giữ 2000 mục mới nhất) |
+
+- Mật khẩu được băm bằng Argon2id (19 MiB, 2 vòng) với muối ngẫu nhiên; chỉ một phép băm chạy tại một thời điểm để giới hạn RAM.
+- Phiên là 32 byte ngẫu nhiên đặt trong cookie `avs_session` (`HttpOnly`, `SameSite=Lax`, `Secure` khi đi qua HTTPS, 30 ngày); cơ sở dữ liệu chỉ giữ SHA-256 của nó.
+- Request `POST`/`PUT`/`DELETE` có header `Origin` khác `Host` bị từ chối (`403 forbidden_origin`); body phải là `application/json`. Response của các endpoint này không có header CORS và là `no-store`.
+- Đăng ký và đăng nhập: tối đa 10 lần mỗi phút và 60 lần mỗi giờ cho một địa chỉ IP; sai mật khẩu 5 lần liên tiếp thì tên đăng nhập đó bị khoá 5 phút. Engine lấy IP của khách từ phần tử cuối của `X-Forwarded-For` khi kết nối đến từ mạng nội bộ (Caddy).
+- Tên đăng nhập: 3-32 ký tự `A-Z a-z 0-9 _ . -`, không phân biệt hoa thường. Mật khẩu: 8-128 ký tự. Tên hiển thị: 1-40 ký tự.
+- Khách chưa đăng nhập vẫn có "Xem tiếp": tiến độ nằm trong `localStorage` của trình duyệt và được chuyển lên tài khoản ở lần đăng nhập kế tiếp.
+- `GET /health` trả `account_store_open`. Không mở được cơ sở dữ liệu thì phần còn lại của engine vẫn chạy, riêng các endpoint tài khoản trả `503`.
+
+**Sao lưu:** toàn bộ dữ liệu người dùng là volume `avs-accounts` (thư mục `/data` trong container). Mất volume là mất tài khoản.
+
+### Đề xuất cho bạn
+
+Khối "Đề xuất cho bạn" ở cuối trang chủ chạy hoàn toàn trong trình duyệt bằng luật, **không dùng mô hình AI nào**: mỗi thể loại của phim đã xem (trọng số 3) và phim đã lưu (trọng số 2) được cộng điểm, điểm giảm dần theo tuổi của lượt xem (còn một nửa sau 14 ngày); các thể loại điểm cao nhất thành các hàng "Vì bạn đã xem ..." và "Vì bạn thích ...", bỏ những phim đã xem, đã lưu hoặc đã hiện ở hàng trước. Người chưa có lịch sử thấy các hàng "Gợi ý hôm nay" theo danh sách thể loại xoay vòng mỗi ngày. Mã nằm ở `web/lib/recommend.ts`.
+
+### Tên miền
+
+Engine nghe ở cổng 8095; Caddy trên máy chủ gắn TLS cho `cdn1.lvn123.site` và `phim.lvn123.site` rồi chuyển tiếp về cổng đó. Để `phim.lvn123.site` chạy, DNS phải có bản ghi `CNAME phim -> cdn1.lvn123.site` (hoặc `A` tới IP máy chủ) ở chế độ DNS-only.
 
 ### Engine trả file của giao diện thế nào
 
@@ -141,7 +210,9 @@ WEB_ROOT=../web/out ./target/release/avs_direct_m3u8 --serve 127.0.0.1:8095   # 
 | Biến môi trường | Mặc định | Ý nghĩa |
 |---|---|---|
 | `WEB_ROOT` | không đặt (image Docker đặt `/app/web`) | Thư mục chứa bản xuất tĩnh của `web/` |
+| `DATA_DIR` | `data` (image Docker đặt `/data`) | Thư mục chứa `accounts.db` |
 | `NEXT_PUBLIC_API_BASE` | rỗng (cùng origin) | Chỉ dùng khi build/dev giao diện: gốc URL của engine |
+| `NEXT_PUBLIC_KK_API` | `https://phimapi.com` | Chỉ dùng khi build giao diện: gốc API của KKPhim |
 
 ### Docker
 
@@ -149,7 +220,7 @@ WEB_ROOT=../web/out ./target/release/avs_direct_m3u8 --serve 127.0.0.1:8095   # 
 docker compose up -d --build
 ```
 
-Image build `web/` bằng Node (chỉ ở bước build), build engine bằng Rust; image chạy chỉ chứa binary và bản xuất tĩnh.
+Image build `web/` bằng Node (chỉ ở bước build), build engine bằng Rust; image chạy chỉ chứa binary và bản xuất tĩnh. `docker-compose.yml` gắn volume `avs-accounts` vào `/data` để tài khoản còn nguyên qua các lần build lại.
 
 ---
 

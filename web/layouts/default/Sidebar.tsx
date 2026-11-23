@@ -1,37 +1,38 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { useState } from "react";
-import { Swiper, SwiperSlide } from "swiper/react";
-import { FreeMode, Mousewheel } from "swiper/modules";
-import type { GenreRef, SeasonRef } from "@/types/engine";
+import type { SeasonRef } from "@/types/engine";
 import { paths } from "@/lib/paths";
-import "swiper/css";
-import "swiper/css/free-mode";
+
+interface DirectoryItem {
+  slug: string;
+  name: string;
+}
 
 interface SidebarProps {
   isOpen: boolean;
   setIsOpen: (value: boolean) => void;
-  chunkedGenres: GenreRef[][];
-  chunkedSeasons: SeasonRef[][];
+  seasons: SeasonRef[];
+  categories: DirectoryItem[];
+  countries: DirectoryItem[];
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen, chunkedGenres, chunkedSeasons }) => {
+const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen, seasons, categories, countries }) => {
   const [openMenu, setOpenMenu] = useState<null | string>(null);
-  const [genreSlideIndex, setGenreSlideIndex] = useState(0);
-  const [genreTotalSlides, setGenreTotalSlides] = useState(0);
-  const [seasonSlideIndex, setSeasonSlideIndex] = useState(0);
-  const [seasonTotalSlides, setSeasonTotalSlides] = useState(0);
-  const toggleMenu = (menu: string) => setOpenMenu((prev) => (prev === menu ? null : menu));
+  const toggleMenu = (menu: string) => setOpenMenu((previous) => (previous === menu ? null : menu));
+
   return (
     <div className={clsx("fixed z-50 w-full top-[4.5rem] lg:hidden", isOpen ? "flex" : "hidden")}>
-      <div className="max-w-xl w-full bg-[rgba(59,73,135,1)] shadow-xl lg:max-w-[23rem] mx-4 lg:mx-8 rounded-xl backdrop-blur-[20px] p-4 flex-col justify-center">
+      <div className="max-w-xl w-full bg-[rgba(59,73,135,1)] shadow-xl mx-4 rounded-xl backdrop-blur-[20px] p-4">
         <button
+          type="button"
+          aria-label="Đóng menu"
           onClick={() => setIsOpen(false)}
           className="absolute top-3 right-4 text-white text-xl"
         >
           ×
         </button>
-        <ul className="grid grid-cols-2 my-6 gap-6 relative">
+        <ul className="grid grid-cols-2 my-6 gap-5 relative">
           <li>
             <Link
               href={paths.home}
@@ -42,150 +43,153 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen, chunkedGenres, chu
           </li>
           <li>
             <Link
-              href={paths.series}
+              href={paths.kkSeries}
               className="text-white hover:text-primary font-semibold text-[13px]"
             >
-              Anime bộ
+              Phim bộ
             </Link>
           </li>
           <li>
             <Link
-              href={paths.movies}
+              href={paths.kkMovies}
               className="text-white hover:text-primary font-semibold text-[13px]"
             >
-              Anime lẻ
+              Phim lẻ
             </Link>
           </li>
           <li>
             <Link
-              href={paths.upcoming}
+              href={paths.kkAnimation}
               className="text-white hover:text-primary font-semibold text-[13px]"
             >
-              Sắp chiếu
+              Hoạt hình
+            </Link>
+          </li>
+          <li>
+            <Link
+              href={paths.kkTvShows}
+              className="text-white hover:text-primary font-semibold text-[13px]"
+            >
+              TV Shows
             </Link>
           </li>
           <li>
             <button
-              onClick={() => toggleMenu("genre")}
-              className="text-white font-semibold flex items-center space-x-2 text-[13px] hover:text-primary"
+              type="button"
+              onClick={() => toggleMenu("anime")}
+              className="flex items-center gap-2 text-white font-semibold text-[13px] hover:text-primary"
             >
-              <span>Thể loại</span>
+              Anime{" "}
               <i
                 className={clsx(
-                  "fa-solid fa-caret-down transition-transform duration-200",
-                  openMenu === "genre" ? "rotate-180 text-primary" : "",
+                  "fa-solid fa-caret-down transition-transform",
+                  openMenu === "anime" && "rotate-180 text-primary",
                 )}
               ></i>
             </button>
-            {openMenu === "genre" && (
-              <div className="z-[20] absolute translate-y-[10px] bg-[#20284bfa] rounded-lg shadow-[2px_1px_12px_0px_#00000030] p-2 w-[-webkit-fill-available]">
-                <div className="flex items-center justify-between p-3 bg-[#fff1]">
-                  <div className="flex items-center space-x-2 text-xs">
-                    <i className="fa-solid fa-clapperboard text-primary"></i>
-                    <span className="font-semibold text-white">TRƯỢT ĐỂ XEM</span>
-                  </div>
-                  <span className="text-white font-semibold text-xs">
-                    {genreTotalSlides > 0 ? `${genreSlideIndex + 1}/${genreTotalSlides}` : "..."}
-                  </span>
-                </div>
-                <Swiper
-                  spaceBetween={8}
-                  slidesPerView="auto"
-                  onSwiper={(swiper) => setGenreTotalSlides(swiper.slides.length)}
-                  onSlideChange={(swiper) => setGenreSlideIndex(swiper.activeIndex)}
-                >
-                  {chunkedGenres.map((columnItems, idx) => (
-                    <SwiperSlide key={idx} className="w-auto">
-                      <ul className="grid grid-cols-2 gap-4 text-[13px] mt-3">
-                        {columnItems.map((item) => (
-                          <li key={item.slug}>
-                            <Link
-                              href={paths.genre(item.slug)}
-                              className="flex flex-row py-1.5 px-4 text-white hover:text-primary hover:bg-gray-400/10 rounded-lg h-full items-center justify-start"
-                            >
-                              {item.name}
-                            </Link>
-                          </li>
-                        ))}
-                      </ul>
-                    </SwiperSlide>
-                  ))}
-                </Swiper>
-              </div>
-            )}
-          </li>
-          <li>
-            <button
-              onClick={() => toggleMenu("season")}
-              className="text-white font-semibold flex items-center space-x-2 text-[13px] hover:text-primary"
-            >
-              <span>Mùa</span>
-              <i
-                className={clsx(
-                  "fa-solid fa-caret-down transition-transform duration-200",
-                  openMenu === "season" ? "rotate-180 text-primary" : "",
-                )}
-              ></i>
-            </button>
-            {openMenu === "season" && (
-              <div className="z-[20] absolute translate-y-[10px] bg-[#20284bfa] rounded-lg shadow-[2px_1px_12px_0px_#00000030] p-2 w-[-webkit-fill-available] right-0">
-                <div className="flex items-center justify-between p-3 bg-[#fff1]">
-                  <div className="flex items-center space-x-2 text-xs">
-                    <i className="fa-solid fa-clapperboard text-primary"></i>
-                    <span className="font-semibold text-white">CUỘN ĐỂ XEM</span>
-                  </div>
-                  <span className="text-white font-semibold text-xs">
-                    {seasonTotalSlides > 0 ? `${seasonSlideIndex + 1}/${seasonTotalSlides}` : "..."}
-                  </span>
-                </div>
-                <div className="my-3 h-[10rem]">
-                  <Swiper
-                    slidesPerView={"auto"}
-                    spaceBetween={8}
-                    freeMode={true}
-                    modules={[FreeMode, Mousewheel]}
-                    mousewheel={true}
-                    direction={"vertical"}
-                    className="h-full"
-                    onSwiper={(swiper) => setSeasonTotalSlides(swiper.slides.length)}
-                    onSlideChange={(swiper) => setSeasonSlideIndex(swiper.activeIndex)}
+            {openMenu === "anime" && (
+              <div className="absolute left-0 right-0 top-8 z-[20] rounded-lg bg-[#20284bfa] p-2 shadow-xl">
+                <div className="grid grid-cols-2 gap-1">
+                  <Link
+                    href={paths.animeSeries}
+                    className="rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10"
                   >
-                    {chunkedSeasons.map((columnItems, idx) => (
-                      <SwiperSlide key={idx} className="w-auto h-auto">
-                        <ul className="flex flex-col space-y-1 text-[13px]">
-                          {columnItems.map((item) => (
-                            <li key={item.slug}>
-                              <Link
-                                href={paths.season(item.slug)}
-                                className="flex flex-row py-1.5 px-4 text-white hover:text-primary hover:bg-gray-400/10 rounded-lg whitespace-nowrap"
-                              >
-                                {item.name}
-                              </Link>
-                            </li>
-                          ))}
-                        </ul>
-                      </SwiperSlide>
-                    ))}
-                  </Swiper>
+                    Anime bộ
+                  </Link>
+                  <Link
+                    href={paths.animeMovies}
+                    className="rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10"
+                  >
+                    Anime lẻ
+                  </Link>
+                  <Link
+                    href={paths.upcoming}
+                    className="rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10"
+                  >
+                    Sắp chiếu
+                  </Link>
+                  <Link
+                    href={paths.schedule}
+                    className="rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10"
+                  >
+                    Lịch chiếu
+                  </Link>
+                  <Link
+                    href={paths.topics}
+                    className="rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10"
+                  >
+                    Chủ đề
+                  </Link>
+                </div>
+                <div className="mt-2 max-h-40 overflow-y-auto border-t border-white/10 pt-2">
+                  {seasons.map((season) => (
+                    <Link
+                      key={season.slug}
+                      href={paths.season(season.slug)}
+                      className="block rounded px-3 py-1.5 text-[13px] text-gray-300 hover:bg-white/10 hover:text-white"
+                    >
+                      {season.name}
+                    </Link>
+                  ))}
                 </div>
               </div>
             )}
           </li>
           <li>
-            <Link
-              href={paths.schedule}
-              className="text-white font-semibold hover:text-primary text-[13px]"
+            <button
+              type="button"
+              onClick={() => toggleMenu("category")}
+              className="flex items-center gap-2 text-white font-semibold text-[13px] hover:text-primary"
             >
-              Lịch chiếu
-            </Link>
+              Thể loại{" "}
+              <i
+                className={clsx(
+                  "fa-solid fa-caret-down transition-transform",
+                  openMenu === "category" && "rotate-180 text-primary",
+                )}
+              ></i>
+            </button>
+            {openMenu === "category" && (
+              <div className="absolute left-0 right-0 top-8 z-[20] max-h-64 overflow-y-auto rounded-lg bg-[#20284bfa] p-2 shadow-xl">
+                {categories.map((category) => (
+                  <Link
+                    key={category.slug}
+                    href={paths.category(category.slug)}
+                    className="block rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10 hover:text-primary"
+                  >
+                    {category.name}
+                  </Link>
+                ))}
+              </div>
+            )}
           </li>
           <li>
-            <Link
-              href={paths.genres}
-              className="text-white font-semibold hover:text-primary text-[13px]"
+            <button
+              type="button"
+              onClick={() => toggleMenu("country")}
+              className="flex items-center gap-2 text-white font-semibold text-[13px] hover:text-primary"
             >
-              Chủ đề
-            </Link>
+              Quốc gia{" "}
+              <i
+                className={clsx(
+                  "fa-solid fa-caret-down transition-transform",
+                  openMenu === "country" && "rotate-180 text-primary",
+                )}
+              ></i>
+            </button>
+            {openMenu === "country" && (
+              <div className="absolute right-0 top-8 z-[20] max-h-64 w-full overflow-y-auto rounded-lg bg-[#20284bfa] p-2 shadow-xl">
+                {countries.map((country) => (
+                  <Link
+                    key={country.slug}
+                    href={paths.country(country.slug)}
+                    className="block rounded px-3 py-1.5 text-[13px] text-gray-300 hover:bg-white/10 hover:text-white"
+                  >
+                    {country.name}
+                  </Link>
+                ))}
+              </div>
+            )}
           </li>
         </ul>
       </div>

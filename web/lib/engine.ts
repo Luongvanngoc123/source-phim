@@ -5,6 +5,7 @@ import type {
   HomeResponse,
   ScheduleResponse,
   SearchResponse,
+  SuggestResponse,
 } from "@/types/engine";
 
 /** Origin of the engine. Empty in production: the engine serves this app, so calls are same-origin. */
@@ -48,7 +49,11 @@ async function request<T>(url: string): Promise<T> {
 
 /** One GET per URL at a time; successful answers are reused for `CACHE_TTL_MS`. */
 function get<T>(path: string): Promise<T> {
-  const url = `${API_BASE}${path}`;
+  return getCachedJson(`${API_BASE}${path}`);
+}
+
+/** Shared cached GET for absolute third-party JSON URLs such as the KKPhim API. */
+export function getCachedJson<T>(url: string): Promise<T> {
   const cached = cache.get(url);
   if (cached && cached.expires > Date.now()) {
     return Promise.resolve(cached.value as T);
@@ -119,4 +124,8 @@ export function errorMessage(error: EngineError): string {
     return "Yêu cầu không hợp lệ.";
   }
   return "Máy chủ đang bận. Thử lại sau ít phút.";
+}
+
+export function getSuggest(query: string): Promise<SuggestResponse> {
+  return get(`/api/suggest?q=${encodeURIComponent(query)}`);
 }
