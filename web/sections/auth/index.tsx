@@ -27,32 +27,34 @@ export default function Auth({ isOpen, mode, closeAuth }: AuthProps): ReactEleme
 
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 flex items-start justify-center z-50 overflow-auto pb-12">
+    <div className="fixed inset-0 z-[100] overflow-y-auto">
       <button
         type="button"
         aria-label="Đóng"
-        className="bg-gray-900 bg-opacity-55 fixed inset-0 cursor-default"
+        className="fixed inset-0 cursor-default bg-black/60 backdrop-blur-[2px]"
         onClick={closeAuth}
       />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={activeMode === "login" ? "Đăng nhập" : "Đăng ký"}
-        className="bg-[#1E2545] modal rounded-xl p-8 lg:p-14 lg:[padding-left:calc(360px+4rem)] z-10 ml-5 mr-5 mt-16 w-full max-w-[700px] lg:max-w-[800px] lg:before:content-[''] lg:before:absolute lg:before:top-0 lg:before:left-0 lg:before:bottom-0 lg:before:w-[360px] lg:before:bg-[url('/images/home-background.jpg')] lg:before:bg-cover lg:before:bg-[position:0_100%] lg:before:rounded-l-xl relative sm:min-w-[400px]"
-      >
-        <button
-          type="button"
-          aria-label="Đóng"
-          className="absolute top-0 right-0 text-white w-12 h-12 min-h-[40px] p-0 text-base font-medium inline-flex items-center justify-center gap-2 rounded-[0.4rem]"
-          onClick={closeAuth}
+      <div className="flex min-h-full items-center justify-center p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={activeMode === "login" ? "Đăng nhập" : "Đăng ký"}
+          className="relative z-10 w-full max-w-[420px] rounded-2xl bg-[#1E2545] p-7 shadow-2xl ring-1 ring-white/10 sm:p-9"
         >
-          <i className="fa-solid fa-times" />
-        </button>
-        {activeMode === "login" ? (
-          <LoginForm closeAuth={closeAuth} onRegister={() => setActiveMode("register")} />
-        ) : (
-          <RegisterForm closeAuth={closeAuth} onLogin={() => setActiveMode("login")} />
-        )}
+          <button
+            type="button"
+            aria-label="Đóng"
+            className="absolute top-0 right-0 text-white w-12 h-12 min-h-[40px] p-0 text-base font-medium inline-flex items-center justify-center gap-2 rounded-[0.4rem]"
+            onClick={closeAuth}
+          >
+            <i className="fa-solid fa-times" />
+          </button>
+          {activeMode === "login" ? (
+            <LoginForm closeAuth={closeAuth} onRegister={() => setActiveMode("register")} />
+          ) : (
+            <RegisterForm closeAuth={closeAuth} onLogin={() => setActiveMode("login")} />
+          )}
+        </div>
       </div>
     </div>
   );

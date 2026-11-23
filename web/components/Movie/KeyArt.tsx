@@ -184,17 +184,17 @@ const MovieSlider: React.FC<{ movies: IMovie[] }> = ({ movies }) => {
     <div className="relative w-full ">
       <Swiper
         modules={[Navigation]}
-        spaceBetween={17}
+        spaceBetween={14}
         loop={true}
-        slidesPerView={4.2}
+        slidesPerView={6.3}
         className="mySwiper"
         breakpoints={{
-          0: { slidesPerView: 1.2 },
-          640: { slidesPerView: 1.5 },
-          768: { slidesPerView: 2.5 },
-          1024: { slidesPerView: 3.3 },
-          1280: { slidesPerView: 4.2 },
-          1680: { slidesPerView: 6 },
+          0: { slidesPerView: 2.3 },
+          640: { slidesPerView: 3.3 },
+          768: { slidesPerView: 4.3 },
+          1024: { slidesPerView: 5.3 },
+          1280: { slidesPerView: 6.3 },
+          1680: { slidesPerView: 7.3 },
         }}
         onTouchStart={() => {
           setIsDragging(true);
@@ -229,14 +229,14 @@ const MovieSlider: React.FC<{ movies: IMovie[] }> = ({ movies }) => {
                   onPointerMove={(e) => handleMouseActivity(movie, e)}
                 >
                   <div
-                    className="relative w-full h-[530px] overflow-hidden"
+                    className="relative w-full aspect-[2/3] overflow-hidden"
                     style={{
                       clipPath: currentClipPath,
                     }}
                   >
                     <Image
                       width={300}
-                      height={500}
+                      height={450}
                       src={movie.poster_url || movie.thumb_url}
                       alt={movie.name}
                       style={{ objectFit: "cover" }}
@@ -287,23 +287,13 @@ const MovieSlider: React.FC<{ movies: IMovie[] }> = ({ movies }) => {
                   </div>
                 </div>
 
-                <div className="flex w-full space-x-5 mt-3 items-center">
-                  <div className="leading-none text-center text-[4.2em] font-extrabold italic bg-clip-text text-primary">
-                    {index + 1}
-                  </div>
-                  <div className="flex flex-col space-y-2">
-                    <h3 className="text-sm text-white line-clamp-2 overflow-hidden text-ellipsis">
-                      {movie.name}
-                    </h3>
-                    {movie.origin_name && (
-                      <p className="text-xs text-gray-400">{movie.origin_name}</p>
-                    )}
-                    <div className="flex items-center space-x-2 rounded-lg bg-gray-900 ">
-                      <span className="text-xs font-bold text-white">{episodeLabel(movie)}</span>
-                      <span className="text-gray-500">&bull;</span>
-                      <span className="text-xs text-gray-300">{movie.year}</span>
-                    </div>
-                  </div>
+                <div className="mt-3 px-1">
+                  <h3 className="text-sm text-white line-clamp-2 overflow-hidden text-ellipsis">
+                    {movie.name}
+                  </h3>
+                  {movie.origin_name && (
+                    <p className="text-xs text-gray-400 truncate">{movie.origin_name}</p>
+                  )}
                 </div>
               </Link>
             </SwiperSlide>

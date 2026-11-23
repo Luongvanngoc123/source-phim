@@ -23,9 +23,10 @@ export default function AccountButton(): ReactElement | null {
     return (
       <button
         type="button"
-        className="text-white hover:text-primary text-[13px] whitespace-nowrap"
+        className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/25 px-3 py-1.5 text-[13px] text-white transition-colors hover:border-primary hover:text-primary"
         onClick={() => openAuth("login")}
       >
+        <i className="fa-solid fa-user text-xs" aria-hidden="true" />
         Đăng nhập
       </button>
     );
@@ -57,7 +58,7 @@ export default function AccountButton(): ReactElement | null {
         />
       </button>
       {open && (
-        <div className="absolute right-0 top-[3rem] lg:w-[13rem] w-max bg-body rounded-lg shadow-xl overflow-hidden animate-fade-in-up origin-top-right">
+        <div className="absolute right-0 top-[3rem] w-[13rem] overflow-hidden rounded-lg bg-body shadow-xl animate-fade-in-up origin-top-right">
           <div className="p-4 border-b border-white/10">
             <span className="text-white text-xs font-medium">{user.display_name}</span>
             <p className="text-gray-300 text-xs mt-1">@{user.username}</p>

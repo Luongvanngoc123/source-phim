@@ -24,7 +24,7 @@ interface NavbarProps {
 
 const menuClass = "text-white hover:text-primary text-[13px] whitespace-nowrap";
 const dropdownClass =
-  "absolute right-0 top-[35px] z-[60] hidden max-w-[calc(100vw-2rem)] rounded-lg bg-[#20284bfa] p-2 text-base shadow-[2px_1px_12px_0px_#00000030] group-hover:block";
+  "absolute right-0 top-[35px] z-[60] hidden max-w-[calc(100vw-2rem)] rounded-lg bg-[#20284bfa] p-2 text-base shadow-[2px_1px_12px_0px_#00000030] before:absolute before:inset-x-0 before:-top-5 before:h-5 before:content-[''] group-hover:block group-focus-within:block";
 
 const Navbar: React.FC<NavbarProps> = ({
   isScrolled,
@@ -106,8 +106,8 @@ const Navbar: React.FC<NavbarProps> = ({
           <SearchBox className="mx-1 hidden min-w-[21rem] max-w-[21rem] xl:flex" />
         </div>
 
-        <div className="hidden min-w-0 flex-1 items-center justify-end gap-5 xl:flex">
-          <ul className="flex min-w-0 items-center gap-4">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-4 xl:gap-5">
+          <ul className="hidden min-w-0 items-center gap-4 xl:flex">
             <li>
               <Link href={paths.home} className={menuClass}>
                 Trang chủ
@@ -236,7 +236,17 @@ const Navbar: React.FC<NavbarProps> = ({
               </div>
             </li>
           </ul>
-          <AccountButton />
+          <button
+            type="button"
+            aria-label="Mở tìm kiếm"
+            onClick={() => setIsMobileSearchOpen(true)}
+            className={clsx("text-lg text-white xl:hidden", isMobileSearchOpen && "hidden")}
+          >
+            <i className="fa-solid fa-magnifying-glass"></i>
+          </button>
+          <div className={clsx(isMobileSearchOpen && "hidden xl:block")}>
+            <AccountButton />
+          </div>
         </div>
 
         <div
@@ -258,16 +268,6 @@ const Navbar: React.FC<NavbarProps> = ({
               <span className="absolute left-0 top-[9px] block h-[2px] w-full rotate-45 bg-[#FF6C5D]"></span>
               <span className="absolute left-0 top-[9px] block h-[2px] w-full -rotate-45 bg-[#FF6C5D]"></span>
             </span>
-          </button>
-        </div>
-        <div className={clsx("xl:hidden", isMobileSearchOpen ? "absolute left-7" : "flex")}>
-          <button
-            type="button"
-            aria-label="Mở tìm kiếm"
-            onClick={() => setIsMobileSearchOpen(true)}
-            className="text-lg text-white"
-          >
-            <i className="fa-solid fa-magnifying-glass"></i>
           </button>
         </div>
       </div>
