@@ -87,9 +87,39 @@ export async function syncLocalProgress(userId: number): Promise<void> {
   }
 }
 
+const LIVE_STORAGE_KEY = "animora_live_progress";
+
+type LiveProgress = { owner: string; entry: ProgressEntry };
+
+function readLive(): LiveProgress | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(LIVE_STORAGE_KEY) ?? "null");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as { owner?: unknown; entry?: unknown };
+    if (typeof record.owner !== "string" || !record.entry || typeof record.entry !== "object") {
+      return null;
+    }
+    const entry = record.entry as Partial<ProgressEntry>;
+    if (!entry.film || !entry.episode) return null;
+    return { owner: record.owner, entry: entry as ProgressEntry };
+  } catch {
+    return null;
+  }
+}
+
+function writeLive(owner: string, entry: ProgressEntry): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LIVE_STORAGE_KEY, JSON.stringify({ owner, entry }));
+  } catch {
+    // Storage can be disabled or full; playback remains usable without persistence.
+  }
+}
+
 function resumePosition(entry: ProgressEntry | undefined): number | undefined {
-  if (!entry || entry.position < 30) return undefined;
-  if (entry.duration > 0 && entry.duration - entry.position < 60) return undefined;
+  if (!entry || entry.position < 1) return undefined;
+  if (entry.duration > 0 && entry.duration - entry.position < 5) return undefined;
   return entry.position;
 }
 
@@ -99,7 +129,7 @@ export function useWatchProgress(
 ): {
   ready: boolean;
   startAt: number | undefined;
-  report(position: number, duration: number): void;
+  report(position: number, duration: number, urgent?: boolean): void;
 } {
   const { user, loading: authLoading } = useAuth();
   // The saved position belongs to one account (or the browser), film and episode. Readiness
@@ -108,10 +138,7 @@ export function useWatchProgress(
   const key =
     authLoading || !film || !episode ? null : `${user?.id ?? "local"}:${film.id}:${episode.slug}`;
   const [loaded, setLoaded] = useState<{ key: string; startAt: number | undefined } | null>(null);
-  const pendingRef = useRef<
-    | { film: FilmRef; episode: { slug: string; name: string }; position: number; duration: number }
-    | undefined
-  >(undefined);
+  const pendingRef = useRef<ProgressEntry | undefined>(undefined);
   const lastWriteRef = useRef(0);
   const writeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentRef = useRef({ film, episode, user });
@@ -120,16 +147,28 @@ export function useWatchProgress(
   useEffect(() => {
     if (key === null || !film || !episode) return undefined;
     let active = true;
+    const owner = user ? String(user.id) : "local";
     const load = async () => {
-      let position: number | undefined;
+      let stored: ProgressEntry | undefined;
       try {
         const entries = user ? await getProgress(film.id) : (readStore()[film.id] ?? []);
-        position = resumePosition(entries.find((item) => item.episode.slug === episode.slug));
+        stored = entries.find((item) => item.episode.slug === episode.slug);
       } catch {
-        // The episode then starts from the beginning, which is always a valid place to start.
-        position = undefined;
+        stored = undefined;
       }
-      if (active) setLoaded({ key, startAt: position });
+      const live = readLive();
+      const liveEntry =
+        live &&
+        live.owner === owner &&
+        live.entry.film.id === film.id &&
+        live.entry.episode.slug === episode.slug
+          ? live.entry
+          : undefined;
+      const chosen =
+        liveEntry && (!stored || liveEntry.updated_at + 60 >= stored.updated_at)
+          ? liveEntry
+          : stored;
+      if (active) setLoaded({ key, startAt: resumePosition(chosen) });
     };
     void load();
     return () => {
@@ -137,26 +176,25 @@ export function useWatchProgress(
     };
   }, [key]);
 
-  const flush = useCallback(async () => {
+  const flush = useCallback(async (keepalive = false) => {
     const pending = pendingRef.current;
     if (!pending) return;
     pendingRef.current = undefined;
     lastWriteRef.current = Date.now();
-    const entry: ProgressEntry = {
-      film: pending.film,
-      episode: pending.episode,
-      position: pending.position,
-      duration: pending.duration,
-      updated_at: Math.floor(Date.now() / 1000),
-    };
     if (currentRef.current.user) {
       try {
-        await saveProgress(entry.film, entry.episode, entry.position, entry.duration);
+        await saveProgress(
+          pending.film,
+          pending.episode,
+          pending.position,
+          pending.duration,
+          keepalive,
+        );
       } catch {
-        pendingRef.current = pending;
+        if (!pendingRef.current) pendingRef.current = pending;
       }
     } else {
-      updateLocal(entry);
+      updateLocal(pending);
     }
   }, []);
 
@@ -170,24 +208,27 @@ export function useWatchProgress(
   }, [flush]);
 
   const report = useCallback(
-    (position: number, duration: number) => {
+    (position: number, duration: number, urgent = false) => {
       const current = currentRef.current;
       if (!current.film || !current.episode || !Number.isFinite(position)) return;
-      const pending = {
+      const entry: ProgressEntry = {
         film: current.film,
         episode: current.episode,
         position: Math.max(0, position),
-        duration: Math.max(0, Number.isFinite(duration) ? duration : 0),
+        duration: Number.isFinite(duration) ? duration : 0,
+        updated_at: Math.floor(Date.now() / 1000),
       };
-      if (!current.user) {
-        // Browser storage is cheap, so a visitor's position is written straight away.
-        updateLocal({ ...pending, updated_at: Math.floor(Date.now() / 1000) });
-        return;
+      writeLive(current.user ? String(current.user.id) : "local", entry);
+      pendingRef.current = entry;
+      if (urgent) {
+        if (writeTimerRef.current) clearTimeout(writeTimerRef.current);
+        writeTimerRef.current = null;
+        void flush(true);
+      } else {
+        scheduleFlush();
       }
-      pendingRef.current = pending;
-      scheduleFlush();
     },
-    [scheduleFlush],
+    [flush, scheduleFlush],
   );
 
   useEffect(() => {
@@ -195,7 +236,7 @@ export function useWatchProgress(
       if (document.visibilityState === "hidden") {
         if (writeTimerRef.current) clearTimeout(writeTimerRef.current);
         writeTimerRef.current = null;
-        void flush();
+        void flush(true);
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -203,7 +244,7 @@ export function useWatchProgress(
       document.removeEventListener("visibilitychange", onVisibility);
       if (writeTimerRef.current) clearTimeout(writeTimerRef.current);
       writeTimerRef.current = null;
-      void flush();
+      void flush(true);
     };
   }, [flush]);
 

@@ -171,6 +171,7 @@ Tài khoản do engine quản lý, lưu trong `DATA_DIR/accounts.db` (SQLite, ch
 - Đăng ký và đăng nhập: tối đa 10 lần mỗi phút và 60 lần mỗi giờ cho một địa chỉ IP; sai mật khẩu 5 lần liên tiếp thì tên đăng nhập đó bị khoá 5 phút. Engine lấy IP của khách từ phần tử cuối của `X-Forwarded-For` khi kết nối đến từ mạng nội bộ (Caddy).
 - Tên đăng nhập: 3-32 ký tự `A-Z a-z 0-9 _ . -`, không phân biệt hoa thường. Mật khẩu: 8-128 ký tự. Tên hiển thị: 1-40 ký tự.
 - Khách chưa đăng nhập vẫn có "Xem tiếp": tiến độ nằm trong `localStorage` của trình duyệt và được chuyển lên tài khoản ở lần đăng nhập kế tiếp.
+- Tải lại trang là xem tiếp đúng vị trí: trình phát ghi vị trí vào `localStorage` (`animora_live_progress`) mỗi giây và ngay lúc trang bị đóng hoặc tải lại; với tài khoản, vị trí còn được gửi lên máy chủ khi tạm dừng, khi rời trang (`keepalive`) và tối đa 10 giây một lần trong lúc phát. Lúc mở lại, `hls.js` bắt đầu tải thẳng từ vị trí đó.
 - `GET /health` trả `account_store_open`. Không mở được cơ sở dữ liệu thì phần còn lại của engine vẫn chạy, riêng các endpoint tài khoản trả `503`.
 
 **Sao lưu:** toàn bộ dữ liệu người dùng là volume `avs-accounts` (thư mục `/data` trong container). Mất volume là mất tài khoản.

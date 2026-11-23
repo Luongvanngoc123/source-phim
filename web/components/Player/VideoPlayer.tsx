@@ -25,7 +25,7 @@ export interface VideoPlayerProps {
   title: string;
   poster?: string;
   startAt?: number;
-  onProgress?: (position: number, duration: number) => void;
+  onProgress?: (position: number, duration: number, urgent?: boolean) => void;
   onEnded?: () => void;
   onNext?: () => void;
   nextLabel?: string;
@@ -204,8 +204,12 @@ export default function VideoPlayer({
     let art: Artplayer | null = null;
     let videoElement: HTMLVideoElement | null = null;
     let hls: InstanceType<HlsConstructor> | null = null;
-    let reportTimer: ReturnType<typeof setInterval> | null = null;
+    let lastReportAt = 0;
     let resumeApplied = false;
+    // Reporting starts once the position on screen is the viewer's own: after the saved
+    // position has been restored and the video has played or been sought. A report before
+    // that would replace the saved position with the 0 the element starts at.
+    let reportEnabled = false;
     let networkRecoveries = 0;
     let mediaRecoveries = 0;
     let failed = false;
@@ -217,14 +221,15 @@ export default function VideoPlayer({
         art.notice.show = message;
       }
     };
-    const reportProgress = () => {
+    const reportProgress = (urgent = false) => {
       const video = art?.video;
-      if (!video || !Number.isFinite(video.currentTime)) {
+      if (!reportEnabled || !resumeApplied || !video || !Number.isFinite(video.currentTime)) {
         return;
       }
       callbackRef.current.onProgress?.(
         video.currentTime,
         Number.isFinite(video.duration) ? video.duration : 0,
+        urgent,
       );
     };
     const setFatalError = (next: PlaybackError) => {
@@ -249,7 +254,7 @@ export default function VideoPlayer({
       resumeApplied = true;
       const startAt = startAtRef.current;
       if (typeof startAt === "number" && startAt > 0) {
-        const position = Math.min(startAt, video.duration);
+        const position = Math.min(startAt, Math.max(0, video.duration - 1));
         video.currentTime = position;
         showNotice(`Tiếp tục từ ${formatTime(position)}`);
       }
@@ -320,7 +325,33 @@ export default function VideoPlayer({
     document.addEventListener("keydown", onKeyDown);
     setState("preparing");
     setError(null);
-    const onPause = () => reportProgress();
+    const onPause = () => reportProgress(true);
+    const onPlaying = () => {
+      reportEnabled = true;
+      setState("ready");
+    };
+    // Dragging the progress bar seeks many times a second, so a seek is not sent to the
+    // server at once: the browser copy is exact straight away and the next pause, page hide
+    // or ten-second tick carries it over.
+    const onSeeked = () => {
+      reportEnabled = true;
+      reportProgress();
+    };
+    const onEnded = () => {
+      reportProgress(true);
+      callbackRef.current.onEnded?.();
+    };
+    const onTimeUpdate = () => {
+      const now = Date.now();
+      if (now - lastReportAt >= 1000) {
+        lastReportAt = now;
+        reportProgress();
+      }
+    };
+    const onPageHide = () => reportProgress(true);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") reportProgress(true);
+    };
     const mount = async () => {
       try {
         if (cancelled) {
@@ -373,6 +404,9 @@ export default function VideoPlayer({
                 const config: Partial<HlsConfig> = {
                   fLoader: makeFragmentLoader(HlsClass),
                 };
+                if (typeof startAtRef.current === "number" && startAtRef.current > 0) {
+                  config.startPosition = startAtRef.current;
+                }
                 if (kind === "direct") {
                   config.pLoader = makeAdPlaylistLoader(HlsClass, (seconds) => {
                     showNotice(`Đã bỏ qua ${formatTime(seconds)} quảng cáo`);
@@ -428,14 +462,13 @@ export default function VideoPlayer({
             setState("ready");
           }
         });
-        video.addEventListener("playing", () => setState("ready"));
+        video.addEventListener("playing", onPlaying);
         video.addEventListener("pause", onPause);
-        video.addEventListener("ended", () => callbackRef.current.onEnded?.());
-        reportTimer = setInterval(() => {
-          if (!video.paused) {
-            reportProgress();
-          }
-        }, 5000);
+        video.addEventListener("seeked", onSeeked);
+        video.addEventListener("ended", onEnded);
+        video.addEventListener("timeupdate", onTimeUpdate);
+        window.addEventListener("pagehide", onPageHide);
+        document.addEventListener("visibilitychange", onVisibility);
       } catch {
         setFatalError("fatal");
       }
@@ -446,11 +479,15 @@ export default function VideoPlayer({
       cancelled = true;
       root.removeEventListener("touchend", onTouchEnd);
       document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+      videoElement?.removeEventListener("loadedmetadata", applyResume);
+      videoElement?.removeEventListener("playing", onPlaying);
       videoElement?.removeEventListener("pause", onPause);
-      if (reportTimer !== null) {
-        clearInterval(reportTimer);
-      }
-      reportProgress();
+      videoElement?.removeEventListener("seeked", onSeeked);
+      videoElement?.removeEventListener("ended", onEnded);
+      videoElement?.removeEventListener("timeupdate", onTimeUpdate);
+      reportProgress(true);
       destroyHls();
       art?.destroy(false);
       art = null;

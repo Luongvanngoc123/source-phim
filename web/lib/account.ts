@@ -169,10 +169,12 @@ export async function saveProgress(
   episode: { slug: string; name: string },
   position: number,
   duration: number,
+  keepalive = false,
 ): Promise<void> {
   await request("/api/me/progress", {
     ...body({ film, episode, position, duration }),
     method: "PUT",
+    keepalive,
   });
 }
 
