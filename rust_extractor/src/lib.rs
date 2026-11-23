@@ -9,6 +9,7 @@ use serde_json::Value;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::LazyLock;
 
 pub mod scraper;
 
@@ -17,7 +18,52 @@ type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
 
 pub const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-pub const PARENT_HOST: &str = "animevietsub.bid";
+
+/// Domain the upstream site is served from when `AVS_PARENT_HOST` is not set.
+///
+/// The site moves to a new domain whenever the current one is blocked: `animevietsub.bid`
+/// stopped answering from Vietnamese networks on 2026-11-23 (connections that name it are
+/// dropped) and the site went on at `animevietsub.zone`. Set `AVS_PARENT_HOST` to follow the
+/// next move without a rebuild.
+pub const DEFAULT_PARENT_HOST: &str = "animevietsub.zone";
+
+static PARENT_HOST: LazyLock<String> = LazyLock::new(|| {
+    host_from_env("AVS_PARENT_HOST").unwrap_or_else(|| DEFAULT_PARENT_HOST.to_string())
+});
+
+static CDN_HOST: LazyLock<String> = LazyLock::new(|| {
+    host_from_env("AVS_CDN_HOST").unwrap_or_else(|| format!("cdn.{}", parent_host()))
+});
+
+/// A bare host name from the environment; a scheme or trailing slash is tolerated.
+fn host_from_env(var: &str) -> Option<String> {
+    let raw = std::env::var(var).ok()?;
+    let host = raw
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    let is_host_name = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.'));
+    if !is_host_name {
+        eprintln!("[WARN] Ignoring {var}={raw:?}: not a host name");
+        return None;
+    }
+    Some(host)
+}
+
+/// Host of the upstream site: `AVS_PARENT_HOST`, else [`DEFAULT_PARENT_HOST`].
+pub fn parent_host() -> &'static str {
+    &PARENT_HOST
+}
+
+/// Host that serves posters and banners: `AVS_CDN_HOST`, else `cdn.<parent host>`.
+pub fn cdn_host() -> &'static str {
+    &CDN_HOST
+}
 
 #[derive(Debug, Clone)]
 pub struct Envelope {
@@ -280,6 +326,62 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+/// A watch page of the upstream site: where to fetch it and what it must contain.
+#[derive(Debug, PartialEq, Eq)]
+struct WatchPage {
+    url: String,
+    slug: String,
+    episode_id: Option<String>,
+}
+
+/// One path segment that may be copied into an upstream URL.
+fn is_plain_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// Turn any `/phim/<slug>[/<episode>.html]` link into the same page on `host`.
+///
+/// Clients keep `watch_url`s around, and those can name a domain the site has since left, so
+/// only the path of the link is used; the page is always fetched from the configured host.
+fn watch_page_on(host: &str, input: &str) -> Result<WatchPage, String> {
+    let Some(phim_idx) = input.find("/phim/") else {
+        return Err(format!("BAD_REQUEST: Unsupported URL or player ID: {input}"));
+    };
+    let after_phim = &input[phim_idx + 6..];
+    let path_only = after_phim.split(['?', '#']).next().unwrap_or(after_phim);
+    let mut segments = path_only.split('/').filter(|s| !s.is_empty());
+
+    let Some(slug) = segments.next().filter(|s| is_plain_segment(s)) else {
+        return Err("BAD_REQUEST: Missing film slug in /phim/ URL".into());
+    };
+    let Some(ep_seg) = segments.next().filter(|seg| *seg != "xem-phim.html") else {
+        return Ok(WatchPage {
+            url: format!("https://{host}/phim/{slug}/xem-phim.html"),
+            slug: slug.to_string(),
+            episode_id: None,
+        });
+    };
+
+    let stem = ep_seg.strip_suffix(".html").unwrap_or(ep_seg);
+    let episode_id = stem
+        .rsplit_once('-')
+        .map(|(_, tail)| tail)
+        .filter(|tail| !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()));
+    match episode_id {
+        Some(id) if is_plain_segment(ep_seg) => Ok(WatchPage {
+            url: format!("https://{host}/phim/{slug}/{ep_seg}"),
+            slug: slug.to_string(),
+            episode_id: Some(id.to_string()),
+        }),
+        _ => Err(format!("NOT_FOUND: Link tập phim không hợp lệ ({ep_seg})")),
+    }
+}
+
 /// Resolve either a 64-char hex player ID, a `stream.googleapiscdn.com/player/<id>` URL,
 /// or an `animevietsub.*` watch page URL into a canonical `https://stream.googleapiscdn.com/player/<id>` URL.
 pub fn resolve_player_url(input: &str) -> Result<String, String> {
@@ -294,73 +396,20 @@ pub fn resolve_player_url(input: &str) -> Result<String, String> {
         return Ok(trimmed.to_string());
     }
 
-    let full_url = if trimmed.starts_with("/phim/") {
-        format!("https://{PARENT_HOST}{trimmed}")
-    } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        trimmed.to_string()
-    } else {
-        return Err(format!("BAD_REQUEST: Unsupported URL or player ID: {trimmed}"));
-    };
+    let page = watch_page_on(parent_host(), trimmed)?;
+    let html = scraper::fetch_avs_html(&page.url, None)?;
 
-    // Parse requested film slug and optional episode segment if this is an animevietsub /phim/ URL
-    let mut req_slug: Option<String> = None;
-    let mut req_ep_id: Option<String> = None;
-
-    if let Some(phim_idx) = full_url.find("/phim/") {
-        let after_phim = &full_url[phim_idx + 6..];
-        let path_only = after_phim.split(['?', '#']).next().unwrap_or(after_phim);
-        let mut segments = path_only.split('/').filter(|s| !s.is_empty());
-        if let Some(slug) = segments.next() {
-            req_slug = Some(slug.to_string());
-            if let Some(ep_seg) = segments.next() {
-                if ep_seg != "xem-phim.html" {
-                    let stem = ep_seg.strip_suffix(".html").unwrap_or(ep_seg);
-                    if let Some((_, tail_id)) = stem.rsplit_once('-') {
-                        if !tail_id.is_empty() && tail_id.bytes().all(|b| b.is_ascii_digit()) {
-                            req_ep_id = Some(tail_id.to_string());
-                        } else {
-                            return Err(format!(
-                                "NOT_FOUND: Link tập phim không hợp lệ ({ep_seg})"
-                            ));
-                        }
-                    } else {
-                        return Err(format!(
-                            "NOT_FOUND: Link tập phim không hợp lệ ({ep_seg})"
-                        ));
-                    }
-                }
-            }
-        } else {
-            return Err("BAD_REQUEST: Missing film slug in /phim/ URL".into());
-        }
+    let expected_path = format!("/phim/{}/", page.slug);
+    if !html.contains(&expected_path) {
+        return Err(format!("NOT_FOUND: Phim '{}' không tồn tại", page.slug));
     }
 
-    // If URL is a bare film page `/phim/<slug>` or `/phim/<slug>/`, redirect to `/phim/<slug>/xem-phim.html`
-    let fetch_target = if let (Some(ref slug), None) = (&req_slug, &req_ep_id) {
-        if !full_url.contains("xem-phim.html") {
-            format!("https://{PARENT_HOST}/phim/{slug}/xem-phim.html")
-        } else {
-            full_url.clone()
-        }
-    } else {
-        full_url.clone()
-    };
-
-    let html = scraper::fetch_avs_html(&fetch_target, None)?;
-
-    if let Some(ref slug) = req_slug {
-        let expected_path = format!("/phim/{slug}/");
-        if !html.contains(&expected_path) {
-            return Err(format!("NOT_FOUND: Phim '{slug}' không tồn tại"));
-        }
-    }
-
-    if let Some(ref ep_id) = req_ep_id {
+    if let Some(ep_id) = &page.episode_id {
         let expected_data_id = format!("data-id=\"{ep_id}\"");
         if !html.contains(&expected_data_id) {
-            let slug_label = req_slug.as_deref().unwrap_or("unknown");
             return Err(format!(
-                "NOT_FOUND: Tập phim ID '{ep_id}' không tồn tại trong phim '{slug_label}'"
+                "NOT_FOUND: Tập phim ID '{ep_id}' không tồn tại trong phim '{}'",
+                page.slug
             ));
         }
     }
@@ -390,7 +439,7 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
     // 1. Fetch Player HTML
     let html = match agent
         .get(player_url)
-        .set("Referer", &format!("https://{PARENT_HOST}/"))
+        .set("Referer", &format!("https://{}/", parent_host()))
         .call()
     {
         Ok(resp) => resp
@@ -410,7 +459,7 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
         .to_string();
 
     let session_key = extract_session_key(&avs_token)?;
-    let fc = B64_STD.encode(PARENT_HOST.as_bytes());
+    let fc = B64_STD.encode(parent_host().as_bytes());
 
     // 2. Fetch Carrier Playlist + X-Envelope
     let pl_url = format!(
@@ -573,4 +622,76 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
         m3u8: output_m3u8,
         m3u8_data_uri,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOST: &str = "animevietsub.zone";
+
+    #[test]
+    fn episode_link_from_a_domain_the_site_left_is_rebuilt_on_the_current_host() {
+        let page = watch_page_on(
+            HOST,
+            "https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html?ref=1#t",
+        )
+        .unwrap();
+
+        assert_eq!(
+            page,
+            WatchPage {
+                url: "https://animevietsub.zone/phim/black-clover-2nd-season-a6073/tap-01-115975.html"
+                    .into(),
+                slug: "black-clover-2nd-season-a6073".into(),
+                episode_id: Some("115975".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn film_link_without_an_episode_opens_its_watch_page() {
+        for input in [
+            "/phim/abc-a1",
+            "https://animevietsub.bid/phim/abc-a1/",
+            "https://animevietsub.zone/phim/abc-a1/xem-phim.html",
+        ] {
+            let page = watch_page_on(HOST, input).unwrap();
+            assert_eq!(page.url, "https://animevietsub.zone/phim/abc-a1/xem-phim.html");
+            assert_eq!(page.episode_id, None);
+        }
+    }
+
+    #[test]
+    fn episode_segment_without_a_numeric_id_is_not_found() {
+        for input in [
+            "https://animevietsub.zone/phim/abc-a1/tap-full.html",
+            "https://animevietsub.zone/phim/abc-a1/tap-01-12%2F..-9.html",
+        ] {
+            let error = watch_page_on(HOST, input).unwrap_err();
+            assert!(error.starts_with("NOT_FOUND:"), "{input}: {error}");
+        }
+    }
+
+    #[test]
+    fn links_that_are_not_film_pages_are_rejected_without_a_fetch() {
+        for input in [
+            "https://example.com/",
+            "https://animevietsub.bid/",
+            "https://animevietsub.zone/phim/",
+            "https://animevietsub.zone/phim/../admin",
+        ] {
+            let error = watch_page_on(HOST, input).unwrap_err();
+            assert!(error.starts_with("BAD_REQUEST:"), "{input}: {error}");
+        }
+    }
+
+    #[test]
+    fn player_ids_and_player_urls_need_no_site_lookup() {
+        let id = "225a9b1cda0dbe429acb3283d030bba90a2195d755376c99d30fbb70c84a5a06";
+        let url = format!("https://stream.googleapiscdn.com/player/{id}");
+
+        assert_eq!(resolve_player_url(id).unwrap(), url);
+        assert_eq!(resolve_player_url(&url).unwrap(), url);
+    }
 }

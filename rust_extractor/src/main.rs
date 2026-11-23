@@ -1,5 +1,5 @@
 use avs_direct_m3u8::{
-    build_direct_cdn_m3u8,
+    build_direct_cdn_m3u8, cdn_host, parent_host,
     scraper::{
         fetch_anime_detail, fetch_catalog_list, fetch_genres_and_seasons, fetch_home_page,
         fetch_schedule, refresh_cached_schedule_countdowns, search_anime, suggest_anime,
@@ -167,9 +167,9 @@ fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap
     }
 
     let target_url = if trimmed.starts_with("/data/") {
-        format!("https://cdn.animevietsub.bid{trimmed}")
+        format!("https://{}{trimmed}", cdn_host())
     } else if let Some(pos) = trimmed.find("/data/") {
-        format!("https://cdn.animevietsub.bid{}", &trimmed[pos..])
+        format!("https://{}{}", cdn_host(), &trimmed[pos..])
     } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()
     } else {
@@ -199,7 +199,7 @@ fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap
 
     let resp = match agent
         .get(&target_url)
-        .set("Referer", "https://animevietsub.bid/")
+        .set("Referer", &format!("https://{}/", parent_host()))
         .call()
     {
         Ok(r) => r,
@@ -751,6 +751,8 @@ fn handle_client(
                 "service": "avs-direct-m3u8-api",
                 "engine": "rust",
                 "docs_url": "https://cdn1.lvn123.site/hdsd",
+                "upstream_host": parent_host(),
+                "image_host": cdn_host(),
                 "cached_streams": s_count,
                 "cached_pages": m_count,
                 "cached_images": i_count,

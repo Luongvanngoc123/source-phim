@@ -1,4 +1,4 @@
-use crate::{DEFAULT_UA, PARENT_HOST};
+use crate::{parent_host, DEFAULT_UA};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -8,6 +8,11 @@ static AVS_COOKIE: OnceLock<Mutex<String>> = OnceLock::new();
 
 fn cookie_store() -> &'static Mutex<String> {
     AVS_COOKIE.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Absolute URL of `path` on the upstream site's current domain.
+fn site_url(path: &str) -> String {
+    format!("https://{}/{path}", parent_host())
 }
 
 fn update_cookies_from_headers(set_cookies: &[&str]) {
@@ -42,7 +47,7 @@ fn update_cookies_from_headers(set_cookies: &[&str]) {
         .join("; ");
 }
 
-/// Fetch any `animevietsub.bid` page or AJAX endpoint, automatically handling the
+/// Fetch any page or AJAX endpoint of the upstream site, automatically handling the
 /// initial HTTP 403 cookie challenge (`Set-Cookie` + retry).
 pub fn fetch_avs_html(url: &str, post_form: Option<&str>) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new().user_agent(DEFAULT_UA).build();
@@ -57,7 +62,7 @@ pub fn fetch_avs_html(url: &str, post_form: Option<&str>) -> Result<String, Stri
         } else {
             agent.get(url)
         };
-        req = req.set("Referer", &format!("https://{PARENT_HOST}/"));
+        req = req.set("Referer", &site_url(""));
         if !current_cookie.is_empty() {
             req = req.set("Cookie", &current_cookie);
         }
@@ -163,7 +168,7 @@ pub fn extract_film_id_from_slug(slug: &str) -> Option<String> {
     None
 }
 
-/// Rewrite `https://cdn.animevietsub.bid/data/...` image URLs to go through our
+/// Rewrite the site's `https://cdn.<site domain>/data/...` image URLs to go through our
 /// Direct-CDN Image Proxy (`https://cdn1.lvn123.site/data/...`) so browsers on any
 /// origin and clients behind Cloudflare WARP never hit Cloudflare challenge or
 /// `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`.
@@ -325,7 +330,7 @@ pub fn fetch_home_page(page: u32) -> Result<Value, String> {
     if page > 1 {
         return fetch_catalog_list("anime-moi", page);
     }
-    let html = fetch_avs_html(&format!("https://{PARENT_HOST}/"), None)?;
+    let html = fetch_avs_html(&site_url(""), None)?;
 
     let mut sections: Vec<Vec<Value>> = Vec::new();
     let mut cursor = html.as_str();
@@ -452,7 +457,7 @@ fn format_countdown_badge(secs: i64) -> String {
 /// Parse `/lich-chieu-phim.html` grouped by broadcast day & time, attaching exact
 /// ISO-8601 `air_at` (`2026-11-25T21:00:00+07:00`) and `air_at_unix`.
 pub fn fetch_schedule() -> Result<Value, String> {
-    let html = fetch_avs_html(&format!("https://{PARENT_HOST}/lich-chieu-phim.html"), None)?;
+    let html = fetch_avs_html(&site_url("lich-chieu-phim.html"), None)?;
     let now_unix = current_unix_secs();
     let (cur_year, cur_month) = civil_year_month_from_unix_vn(now_unix);
 
@@ -586,11 +591,11 @@ pub fn refresh_cached_schedule_countdowns(cached_json: &str) -> String {
 pub fn fetch_catalog_list(path: &str, page: u32) -> Result<Value, String> {
     let clean_path = path.trim_matches('/');
     let url = if clean_path.is_empty() {
-        format!("https://{PARENT_HOST}/")
+        site_url("")
     } else if page > 1 {
-        format!("https://{PARENT_HOST}/{clean_path}/trang-{page}.html")
+        site_url(&format!("{clean_path}/trang-{page}.html"))
     } else {
-        format!("https://{PARENT_HOST}/{clean_path}/")
+        site_url(&format!("{clean_path}/"))
     };
 
     let html = fetch_avs_html(&url, None)?;
@@ -606,7 +611,7 @@ pub fn fetch_catalog_list(path: &str, page: u32) -> Result<Value, String> {
 
 /// Extract all genres and seasons from the homepage navigation.
 pub fn fetch_genres_and_seasons() -> Result<Value, String> {
-    let html = fetch_avs_html(&format!("https://{PARENT_HOST}/"), None)?;
+    let html = fetch_avs_html(&site_url(""), None)?;
     let mut genres = Vec::new();
     let mut seen_genres = HashSet::new();
     let mut seasons = Vec::new();
@@ -684,7 +689,7 @@ pub fn suggest_anime(query: &str) -> Result<Value, String> {
     }
     let encoded_q = encode_search_keyword(q_trimmed);
     let form = format!("ajaxSearch=1&keysearch={encoded_q}");
-    let sug_html = fetch_avs_html(&format!("https://{PARENT_HOST}/ajax/suggest"), Some(&form))?;
+    let sug_html = fetch_avs_html(&site_url("ajax/suggest"), Some(&form))?;
 
     let mut items = Vec::new();
     let mut cur = sug_html.as_str();
@@ -734,9 +739,9 @@ pub fn search_anime(query: &str, page: u32) -> Result<Value, String> {
     let encoded_q = encode_search_keyword(q_trimmed);
 
     let search_url = if page > 1 {
-        format!("https://{PARENT_HOST}/tim-kiem/{encoded_q}/trang-{page}.html")
+        site_url(&format!("tim-kiem/{encoded_q}/trang-{page}.html"))
     } else {
-        format!("https://{PARENT_HOST}/tim-kiem/{encoded_q}/")
+        site_url(&format!("tim-kiem/{encoded_q}/"))
     };
 
     let html = fetch_avs_html(&search_url, None)?;
@@ -758,7 +763,7 @@ pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
     if slug.is_empty() {
         return Err("BAD_REQUEST: Missing anime `slug` or `url`".into());
     }
-    let info_url = format!("https://{PARENT_HOST}/phim/{slug}/");
+    let info_url = site_url(&format!("phim/{slug}/"));
     let info_html = fetch_avs_html(&info_url, None)?;
 
     let Some(single_pos) = info_html.find("class=\"TPost Single\"") else {
@@ -773,7 +778,7 @@ pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
         return Err(format!("NOT_FOUND: Không tìm thấy phim với slug '{slug}'"));
     }
 
-    let watch_url = format!("https://{PARENT_HOST}/phim/{slug}/xem-phim.html");
+    let watch_url = site_url(&format!("phim/{slug}/xem-phim.html"));
     let watch_html = fetch_avs_html(&watch_url, None).unwrap_or_default();
 
     let sub_title = extract_between(single_block, "<h2 class=\"SubTitle\">", "</h2>")

@@ -87,6 +87,19 @@ API đã được triển khai qua Docker (`avs-direct-m3u8-api`, chỉ chiếm 
 - **Xuất JSON đầy đủ (`player_id`, `segment_count`, `m3u8`, `m3u8_data_uri`):**
   `GET https://cdn1.lvn123.site/api/extract?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html`
 
+### Tên miền của trang nguồn (`AVS_PARENT_HOST`)
+
+Trang nguồn đổi tên miền mỗi khi tên miền đang dùng bị chặn. Ngày 2026-11-23 `animevietsub.bid` ngừng trả lời từ mạng Việt Nam (đo trên VNPT và Viettel: kết nối nêu tên miền này không được hồi đáp, DNS của Viettel trả `127.0.0.1`), nên mọi endpoint danh mục của engine trả `502`; trang đã chuyển sang `animevietsub.zone`. Engine đọc tên miền từ biến môi trường, không cần build lại:
+
+| Biến môi trường | Mặc định | Ý nghĩa |
+|---|---|---|
+| `AVS_PARENT_HOST` | `animevietsub.zone` | Tên miền trang nguồn: mọi trang, `Referer` và tham số `fc` của playlist đều dùng nó |
+| `AVS_CDN_HOST` | `cdn.<AVS_PARENT_HOST>` | Tên miền ảnh poster/banner mà `/data/**` và `/api/image` lấy về |
+
+- `GET /health` trả `upstream_host` và `image_host` đang dùng.
+- Link tập phim cũ (ví dụ `https://animevietsub.bid/phim/<slug>/tap-01-<id>.html`) vẫn dùng được: engine chỉ lấy phần đường dẫn rồi tải trang trên tên miền hiện tại.
+- Khi trang lại đổi tên miền: xem link rút gọn trang tự công bố (`bit.ly/animevietsubtv`) chuyển tới đâu, sửa `AVS_PARENT_HOST` trong `docker-compose.yml`, rồi `docker compose up -d`.
+
 ---
 
 ## Hướng dẫn sử dụng (HDSD)
