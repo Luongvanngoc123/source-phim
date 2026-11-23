@@ -1,4 +1,4 @@
-import { getCatalogPage, type CatalogSpec } from "@/lib/catalog";
+import { getCatalogPage, TYPE_CATEGORY_SLUGS, type CatalogSpec } from "@/lib/catalog";
 import type { FilmRef, ProgressEntry } from "@/lib/account";
 
 export interface RecommendationShelf {
@@ -49,10 +49,12 @@ export function buildRecommendationPlan(
     if (!previous || entry.updated_at > previous.updated_at) watched.set(entry.film.id, entry);
   }
   const signals = new Map<string, Signal>();
+  const genresOf = (film: FilmRef) =>
+    film.genres.filter((genre) => !TYPE_CATEGORY_SLUGS[genre.slug]);
   const addSignals = (film: FilmRef, timestamp: number, weight: number) => {
     const ageDays = Math.max(0, (now - timestamp * 1000) / 86_400_000);
     const recency = 1 / (1 + ageDays / 14);
-    for (const genre of film.genres) {
+    for (const genre of genresOf(film)) {
       const key = `${film.source}:${genre.slug}`;
       const existing = signals.get(key);
       if (existing) existing.score += weight * recency;
@@ -68,7 +70,7 @@ export function buildRecommendationPlan(
   for (const entry of [...watched.values()]
     .sort((a, b) => b.updated_at - a.updated_at)
     .slice(0, 3)) {
-    const genre = entry.film.genres[0];
+    const genre = genresOf(entry.film)[0];
     if (!genre) continue;
     const key = `${entry.film.source}:${genre.slug}`;
     if (usedGenres.has(key)) continue;

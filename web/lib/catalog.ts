@@ -34,6 +34,12 @@ export type CatalogSpec =
   | { source: "kk"; category: string }
   | { source: "kk"; country: string };
 
+/**
+ * The anime source lists a title's type ("Anime bộ", "Anime lẻ") among its genres. A type
+ * says nothing about taste, so related films and recommendations leave it out.
+ */
+export const TYPE_CATEGORY_SLUGS: Record<string, true> = { "anime-bo": true, "anime-le": true };
+
 export async function getFilm(id: string): Promise<IFilm> {
   if (id.startsWith("kk_")) return getDetail(stripKkPrefix(id));
   return detailToFilm(await getAnime(id));
@@ -58,7 +64,7 @@ export async function getRelated(film: IFilm, limit = 12): Promise<IMovie[]> {
   const candidates = film.movie.category;
   const excluded = film.movie.slug;
   const first = candidates.find(
-    (category) => film.movie.source === "kk" || !["anime-bo", "anime-le"].includes(category.slug),
+    (category) => film.movie.source === "kk" || !TYPE_CATEGORY_SLUGS[category.slug],
   );
   if (!first) return [];
   if (film.movie.source === "kk") {
