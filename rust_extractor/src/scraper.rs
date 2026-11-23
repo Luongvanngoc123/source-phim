@@ -323,6 +323,45 @@ pub fn parse_tpost_list(html: &str) -> Vec<Value> {
 
     items
 }
+fn extract_total_pages(html: &str) -> Option<u32> {
+    if let Some(start) = html.find("<span class=\"pages\">") {
+        let text_start = start + "<span class=\"pages\">".len();
+        if let Some(end) = html[text_start..].find("</span>") {
+            let text = &html[text_start..text_start + end];
+            if let Some(of_pos) = text.find("của") {
+                let digits: String = text[of_pos + "của".len()..]
+                    .chars()
+                    .skip_while(|ch| !ch.is_ascii_digit())
+                    .take_while(|ch| ch.is_ascii_digit())
+                    .collect();
+                if let Ok(total) = digits.parse::<u32>() {
+                    if total > 0 {
+                        return Some(total);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut max_page: Option<u32> = None;
+    let mut cursor = html;
+    while let Some(marker) = cursor.find("trang-") {
+        let after = &cursor[marker + "trang-".len()..];
+        let digits = after
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        if digits > 0 {
+            if let Ok(page) = after[..digits].parse::<u32>() {
+                if page > 0 {
+                    max_page = Some(max_page.map_or(page, |current| current.max(page)));
+                }
+            }
+        }
+        cursor = &after[digits..];
+    }
+    max_page
+}
 
 /// Fetch homepage (`/`) separated into `latest` (Mới cập nhật), `upcoming` (Sắp chiếu),
 /// `featured` (Đề cử), plus combined `items` for backward compatibility.
@@ -604,6 +643,7 @@ pub fn fetch_catalog_list(path: &str, page: u32) -> Result<Value, String> {
         "success": true,
         "path": clean_path,
         "page": page,
+        "total_pages": extract_total_pages(&html),
         "count": items.len(),
         "items": items
     }))
@@ -751,6 +791,7 @@ pub fn search_anime(query: &str, page: u32) -> Result<Value, String> {
         "success": true,
         "query": q_trimmed,
         "page": page,
+        "total_pages": extract_total_pages(&html),
         "count": items.len(),
         "items": items
     }))
@@ -978,4 +1019,22 @@ pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
         "initial_player_url": initial_player_url,
         "episodes": episodes
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_total_pages;
+
+    #[test]
+    fn extracts_pages_from_wp_pagenavi_pages_text() {
+        let fixture = r#"<div class='wp-pagenavi'><span class="pages">Trang 1 của 156</span><span class="current" title="Trang 1">1</span><a class="page larger" title="Trang 2" href="https://animevietsub.zone/anime-bo/trang-2.html" data="2">2</a><a class="page larger" title="Trang Cuối" href="https://animevietsub.zone/anime-bo/trang-156.html" data="156">Trang Cuối</a></div>"#;
+        assert_eq!(extract_total_pages(fixture), Some(156));
+    }
+
+    #[test]
+    fn falls_back_to_last_page_link() {
+        let fixture = r#"<div class='wp-pagenavi'><a href="/anime-bo/trang-2.html">2</a><a href="/anime-bo/trang-17.html">17</a></div>"#;
+        assert_eq!(extract_total_pages(fixture), Some(17));
+        assert_eq!(extract_total_pages("<ul class='rows'></ul>"), None);
+    }
 }

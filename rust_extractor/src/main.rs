@@ -7,11 +7,13 @@ use avs_direct_m3u8::{
     DirectM3u8Result, DEFAULT_UA,
 };
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,10 +21,25 @@ use std::time::{Duration, Instant};
 type StreamCacheMap = Arc<Mutex<HashMap<String, (Instant, DirectM3u8Result)>>>;
 type JsonCacheMap = Arc<Mutex<HashMap<String, (Instant, String)>>>;
 type ImageCacheMap = Arc<Mutex<HashMap<String, (Instant, String, Vec<u8>)>>>;
+type BannerCacheMap = Arc<Mutex<BannerCache>>;
+
+#[derive(Default)]
+struct BannerCache {
+    entries: HashMap<String, (Instant, String)>,
+    queued: HashSet<String>,
+    failures: HashMap<String, Instant>,
+}
 
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(1800); // 30 minutes
 const META_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
 const IMAGE_CACHE_TTL: Duration = Duration::from_secs(86400); // 24 hours
+const BANNER_CACHE_TTL: Duration = Duration::from_secs(86400); // 24 hours
+const IMAGE_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// A cached page is a few tens of kilobytes of JSON; 512 of them stay in the low tens of megabytes.
+const JSON_CACHE_MAX_ENTRIES: usize = 512;
+/// Each stream is stored under two keys and carries the playlist twice (plain and as a data URI).
+const STREAM_CACHE_MAX_ENTRIES: usize = 128;
+const BANNER_RETRY_DELAY: Duration = Duration::from_secs(600);
 
 fn percent_decode(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
@@ -48,6 +65,229 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+struct ResolvedStaticFile {
+    path: PathBuf,
+    content_type: &'static str,
+    cache_control: &'static str,
+}
+
+fn decode_static_path(raw_path: &str) -> Option<Vec<String>> {
+    let raw = raw_path.strip_prefix('/')?;
+    let mut bytes = Vec::with_capacity(raw.len());
+    let raw_bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < raw_bytes.len() {
+        if raw_bytes[i] == b'%' {
+            if i + 2 >= raw_bytes.len() {
+                return None;
+            }
+            let hex = std::str::from_utf8(&raw_bytes[i + 1..i + 3]).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            bytes.push(raw_bytes[i]);
+            i += 1;
+        }
+    }
+    while bytes.last() == Some(&b'/') {
+        bytes.pop();
+    }
+    let decoded = String::from_utf8(bytes).ok()?;
+    if decoded.is_empty() {
+        return Some(Vec::new());
+    }
+    decoded
+        .split('/')
+        .map(|segment| {
+            if segment.is_empty()
+                || segment == ".."
+                || segment.contains('\\')
+                || segment.as_bytes().contains(&0)
+                || segment.starts_with('.')
+            {
+                None
+            } else {
+                Some(segment.to_string())
+            }
+        })
+        .collect()
+}
+
+fn canonical_file_inside(root: &Path, candidate: &Path) -> Option<PathBuf> {
+    let canonical_root = fs::canonicalize(root).ok()?;
+    let canonical_candidate = fs::canonicalize(candidate).ok()?;
+    if !canonical_candidate.starts_with(&canonical_root)
+        || !fs::metadata(&canonical_candidate).ok()?.is_file()
+    {
+        return None;
+    }
+    Some(canonical_candidate)
+}
+
+fn bracket_entry(dir: &Path, want_dir: bool) -> Option<PathBuf> {
+    let mut candidates = fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let matching = if want_dir {
+                name.starts_with('[') && name.ends_with(']')
+            } else {
+                name.starts_with('[') && name.ends_with("].html")
+            };
+            if !matching {
+                return None;
+            }
+            let metadata = fs::metadata(entry.path()).ok()?;
+            (metadata.is_dir() == want_dir && metadata.is_file() != want_dir)
+                .then_some((name, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    candidates.into_iter().next().map(|(_, path)| path)
+}
+
+fn content_type_for(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "txt" => "text/plain; charset=utf-8",
+        "xml" => "application/xml",
+        "webmanifest" => "application/manifest+json",
+        _ => "application/octet-stream",
+    }
+}
+
+fn static_file(root: &Path, path: PathBuf, request_path: &str) -> Option<ResolvedStaticFile> {
+    let path = canonical_file_inside(root, &path)?;
+    Some(ResolvedStaticFile {
+        content_type: content_type_for(&path),
+        cache_control: cache_control_for(request_path, &path),
+        path,
+    })
+}
+
+fn resolve_static_file(root: &Path, request_path: &str) -> Option<ResolvedStaticFile> {
+    let segments = decode_static_path(request_path)?;
+    let canonical_root = fs::canonicalize(root).ok()?;
+    if !fs::metadata(&canonical_root).ok()?.is_dir() {
+        return None;
+    }
+
+    if segments.is_empty() {
+        return static_file(&canonical_root, canonical_root.join("index.html"), request_path);
+    }
+
+    // The complete path as a file wins over every other reading of it.
+    let mut exact = canonical_root.clone();
+    for segment in &segments {
+        exact.push(segment);
+    }
+    if exact.is_file() {
+        return static_file(&canonical_root, exact, request_path);
+    }
+
+    // Next.js exports a page as `<path>.html`.
+    let mut extensionless = canonical_root.clone();
+    for (index, segment) in segments.iter().enumerate() {
+        if index + 1 == segments.len() {
+            extensionless.push(format!("{segment}.html"));
+        } else {
+            extensionless.push(segment);
+        }
+    }
+    if extensionless.is_file() {
+        return static_file(&canonical_root, extensionless, request_path);
+    }
+    if exact.is_dir() {
+        return static_file(&canonical_root, exact.join("index.html"), request_path);
+    }
+
+    // Finally walk the path one segment at a time, substituting a deterministic bracket
+    // entry whenever the exact segment is absent.
+    let mut current = canonical_root.clone();
+    for (index, segment) in segments.iter().enumerate() {
+        let is_last = index + 1 == segments.len();
+        let exact = current.join(segment);
+        if exact.is_dir() {
+            current = exact;
+            continue;
+        }
+        if exact.is_file() {
+            return if is_last {
+                static_file(&canonical_root, exact, request_path)
+            } else {
+                None
+            };
+        }
+        if is_last {
+            return bracket_entry(&current, false)
+                .and_then(|candidate| static_file(&canonical_root, candidate, request_path));
+        }
+        current = bracket_entry(&current, true)?;
+    }
+    static_file(
+        &canonical_root,
+        current.join("index.html"),
+        request_path,
+    )
+}
+
+fn cache_control_for(request_path: &str, path: &Path) -> &'static str {
+    let immutable = decode_static_path(request_path).is_some_and(|segments| {
+        segments.len() >= 3 && segments[0] == "_next" && segments[1] == "static"
+    });
+    if immutable {
+        "public, max-age=31536000, immutable"
+    } else if path.extension().and_then(|ext| ext.to_str()) == Some("html") {
+        "no-cache"
+    } else {
+        "public, max-age=86400"
+    }
+}
+
+fn send_file_response(
+    mut stream: TcpStream,
+    status: &str,
+    file: &ResolvedStaticFile,
+    head_only: bool,
+) {
+    let Ok(metadata) = fs::metadata(&file.path) else {
+        return;
+    };
+    let header = format!(
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: {}\r\n\
+         Content-Length: {}\r\n\
+         Cache-Control: {}\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Cross-Origin-Resource-Policy: cross-origin\r\n\
+         Connection: close\r\n\r\n",
+        file.content_type,
+        metadata.len(),
+        file.cache_control
+    );
+    let _ = stream.write_all(header.as_bytes());
+    if !head_only {
+        if let Ok(mut body) = fs::File::open(&file.path) {
+            let _ = std::io::copy(&mut body, &mut stream);
+        }
+    }
+    let _ = stream.flush();
+}
+
 fn parse_query_param(query: &str, key: &str) -> Option<String> {
     for pair in query.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
@@ -64,6 +304,22 @@ fn parse_page_param(query: &str) -> u32 {
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|&p| p >= 1)
         .unwrap_or(1)
+}
+
+/// Drops expired entries, then the oldest ones, until one more entry fits under `max_entries`.
+/// Without it every distinct search or episode would stay in memory for the life of the process.
+fn make_room<V>(cache: &mut HashMap<String, (Instant, V)>, ttl: Duration, max_entries: usize) {
+    cache.retain(|_, (stored, _)| stored.elapsed() < ttl);
+    while cache.len() >= max_entries {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (stored, _))| *stored)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
 }
 
 fn get_or_extract(
@@ -83,6 +339,7 @@ fn get_or_extract(
     let res = build_direct_cdn_m3u8(target, true)?;
     {
         let mut guard = cache.lock().unwrap();
+        make_room(&mut guard, STREAM_CACHE_TTL, STREAM_CACHE_MAX_ENTRIES - 1);
         guard.insert(target.to_string(), (Instant::now(), res.clone()));
         guard.insert(res.player_id.clone(), (Instant::now(), res.clone()));
     }
@@ -107,31 +364,236 @@ where
     let serialized = val.to_string();
     {
         let mut guard = cache.lock().unwrap();
+        make_room(&mut guard, META_CACHE_TTL, JSON_CACHE_MAX_ENTRIES);
         guard.insert(key.to_string(), (Instant::now(), serialized.clone()));
     }
     Ok(serialized)
 }
 
-fn send_response(
+fn send_response_with_head(
     mut stream: TcpStream,
     status: &str,
     content_type: &str,
     body: &[u8],
+    head_only: bool,
 ) {
     let header = format!(
         "HTTP/1.1 {status}\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Methods: GET, HEAD, POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: *\r\n\
          Cross-Origin-Resource-Policy: cross-origin\r\n\
          Connection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(body);
+    if !head_only {
+        let _ = stream.write_all(body);
+    }
     let _ = stream.flush();
+}
+
+
+fn cache_image(
+    guard: &mut HashMap<String, (Instant, String, Vec<u8>)>,
+    key: String,
+    content_type: String,
+    body: Vec<u8>,
+) {
+    let now = Instant::now();
+    guard.retain(|_, (ts, _, _)| ts.elapsed() < IMAGE_CACHE_TTL);
+    guard.remove(&key);
+    if body.len() > IMAGE_CACHE_MAX_BYTES {
+        return;
+    }
+    let mut total = guard.values().map(|(_, _, bytes)| bytes.len()).sum::<usize>();
+    while total + body.len() > IMAGE_CACHE_MAX_BYTES {
+        let Some(oldest_key) = guard
+            .iter()
+            .min_by_key(|(_, (ts, _, _))| *ts)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        if let Some((_, _, bytes)) = guard.remove(&oldest_key) {
+            total = total.saturating_sub(bytes.len());
+        }
+    }
+    if total + body.len() <= IMAGE_CACHE_MAX_BYTES {
+        guard.insert(key, (now, content_type, body));
+    }
+}
+fn banner_for_slug(cache: &BannerCacheMap, slug: &str) -> String {
+    cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.entries.get(slug).cloned())
+        .filter(|(ts, _)| ts.elapsed() < BANNER_CACHE_TTL)
+        .map(|(_, banner)| banner)
+        .unwrap_or_default()
+}
+
+fn remember_banner(cache: &BannerCacheMap, slug: &str, detail: &Value) {
+    let banner = detail
+        .get("banner")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let Ok(mut guard) = cache.lock() {
+        guard.entries.insert(slug.to_string(), (Instant::now(), banner));
+        guard.failures.remove(slug);
+        guard.queued.remove(slug);
+    }
+}
+
+fn queue_featured_banners(cache: &BannerCacheMap, slugs: &[String], pending: &mut Vec<String>) {
+    let Ok(mut guard) = cache.lock() else {
+        return;
+    };
+    for slug in slugs {
+        if slug.is_empty()
+            || guard
+                .entries
+                .get(slug)
+                .is_some_and(|(ts, _)| ts.elapsed() < BANNER_CACHE_TTL)
+            || guard.queued.contains(slug)
+            || guard
+                .failures
+                .get(slug)
+                .is_some_and(|ts| ts.elapsed() < BANNER_RETRY_DELAY)
+        {
+            continue;
+        }
+        guard.queued.insert(slug.clone());
+        guard.failures.remove(slug);
+        pending.push(slug.clone());
+    }
+}
+
+fn featured_slugs(body: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| value.get("featured").cloned())
+        .and_then(|featured| featured.as_array().cloned())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("slug").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn decorate_home_response(
+    body: String,
+    banner_cache: &BannerCacheMap,
+    banner_tx: &Sender<Vec<String>>,
+) -> String {
+    let Ok(mut root) = serde_json::from_str::<Value>(&body) else {
+        return body;
+    };
+    let Some(featured) = root.get_mut("featured").and_then(Value::as_array_mut) else {
+        return body;
+    };
+    let mut slugs = Vec::with_capacity(featured.len());
+    for item in featured {
+        if let Some(object) = item.as_object_mut() {
+            let slug = object
+                .get("slug")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !slug.is_empty() {
+                slugs.push(slug.clone());
+            }
+            object.insert(
+                "banner".to_string(),
+                Value::String(banner_for_slug(banner_cache, &slug)),
+            );
+        }
+    }
+    let _ = banner_tx.send(slugs);
+    root.to_string()
+}
+
+fn run_banner_worker(
+    json_cache: JsonCacheMap,
+    banner_cache: BannerCacheMap,
+    banner_rx: Receiver<Vec<String>>,
+    startup_tx: Sender<Vec<String>>,
+) {
+    let startup_cache = Arc::clone(&json_cache);
+    thread::spawn(move || {
+        if let Ok(body) = get_or_fetch_json("home:1", &startup_cache, || fetch_home_page(1)) {
+            let _ = startup_tx.send(featured_slugs(&body));
+        }
+    });
+    let mut pending = Vec::new();
+    let mut last_fetch: Option<Instant> = Some(Instant::now());
+    loop {
+        while let Ok(slugs) = banner_rx.try_recv() {
+            queue_featured_banners(&banner_cache, &slugs, &mut pending);
+        }
+        if pending.is_empty() {
+            match banner_rx.recv_timeout(Duration::from_secs(30)) {
+                Ok(slugs) => queue_featured_banners(&banner_cache, &slugs, &mut pending),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        if pending.is_empty() {
+            continue;
+        }
+        // Oldest request first: the hero shows the featured titles in list order.
+        let slug = pending.remove(0);
+        if let Some(previous) = last_fetch {
+            let elapsed = previous.elapsed();
+            if elapsed < Duration::from_millis(500) {
+                thread::sleep(Duration::from_millis(500) - elapsed);
+            }
+        }
+        let result = fetch_anime_detail(&slug);
+        last_fetch = Some(Instant::now());
+        match result {
+            Ok(detail) => remember_banner(&banner_cache, &slug, &detail),
+            Err(_) => {
+                if let Ok(mut guard) = banner_cache.lock() {
+                    guard.queued.remove(&slug);
+                    guard.failures.insert(slug, Instant::now());
+                }
+            }
+        }
+    }
+}
+
+fn send_json_result_with_head(
+    stream: TcpStream,
+    res: Result<String, String>,
+    head_only: bool,
+) {
+    match res {
+        Ok(body) => send_response_with_head(
+            stream,
+            "200 OK",
+            "application/json; charset=utf-8",
+            body.as_bytes(),
+            head_only,
+        ),
+        Err(err) => {
+            let (status, clean_msg) = map_error_status_and_message(&err);
+            let body = json!({ "success": false, "error": clean_msg }).to_string();
+            send_response_with_head(
+                stream,
+                status,
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                head_only,
+            );
+        }
+    }
 }
 
 fn send_image_response(
@@ -139,29 +601,39 @@ fn send_image_response(
     status: &str,
     content_type: &str,
     body: &[u8],
+    head_only: bool,
 ) {
     let header = format!(
         "HTTP/1.1 {status}\r\n\
          Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
          Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+         Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n\
          Cross-Origin-Resource-Policy: cross-origin\r\n\
          Cache-Control: public, max-age=2592000, immutable\r\n\
          Connection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(body);
+    if !head_only {
+        let _ = stream.write_all(body);
+    }
     let _ = stream.flush();
 }
 
-fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap) {
+fn handle_image_proxy(
+    stream: TcpStream,
+    raw_target: &str,
+    cache: &ImageCacheMap,
+    head_only: bool,
+) {
+
     let trimmed = raw_target.trim();
     if trimmed.is_empty() {
-        send_json_result(
+        send_json_result_with_head(
             stream,
             Err("BAD_REQUEST: Missing image path or url parameter".into()),
+            head_only,
         );
         return;
     }
@@ -173,9 +645,10 @@ fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap
     } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()
     } else {
-        send_json_result(
+        send_json_result_with_head(
             stream,
             Err("BAD_REQUEST: Invalid image URL".into()),
+            head_only,
         );
         return;
     };
@@ -184,7 +657,7 @@ fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap
         let mut guard = cache.lock().unwrap();
         if let Some((ts, ct, bytes)) = guard.get(&target_url) {
             if ts.elapsed() < IMAGE_CACHE_TTL {
-                send_image_response(stream, "200 OK", ct, bytes);
+                send_image_response(stream, "200 OK", ct, bytes, head_only);
                 return;
             } else {
                 guard.remove(&target_url);
@@ -204,11 +677,19 @@ fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap
     {
         Ok(r) => r,
         Err(ureq::Error::Status(404, _)) => {
-            send_json_result(stream, Err("NOT_FOUND: Image not found".into()));
+            send_json_result_with_head(
+                stream,
+                Err("NOT_FOUND: Image not found".into()),
+                head_only,
+            );
             return;
         }
         Err(e) => {
-            send_json_result(stream, Err(format!("Upstream image fetch failed: {e}")));
+            send_json_result_with_head(
+                stream,
+                Err(format!("Upstream image fetch failed: {e}")),
+                head_only,
+            );
             return;
         }
     };
@@ -228,25 +709,25 @@ fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap
 
     let mut body = Vec::with_capacity(40960);
     if resp.into_reader().read_to_end(&mut body).is_err() {
-        send_json_result(stream, Err("Failed to read upstream image body".into()));
+        send_json_result_with_head(
+            stream,
+            Err("Failed to read upstream image body".into()),
+            head_only,
+        );
         return;
     }
 
-    if body.len() <= 256 * 1024 {
+    {
         let mut guard = cache.lock().unwrap();
-        if guard.len() >= 120 {
-            let keys: Vec<String> = guard.keys().take(25).cloned().collect();
-            for k in keys {
-                guard.remove(&k);
-            }
-        }
-        guard.insert(
-            target_url,
-            (Instant::now(), content_type.clone(), body.clone()),
+        cache_image(
+            &mut guard,
+            target_url.clone(),
+            content_type.clone(),
+            body.clone(),
         );
     }
 
-    send_image_response(stream, "200 OK", &content_type, &body);
+    send_image_response(stream, "200 OK", &content_type, &body, head_only);
 }
 
 fn map_error_status_and_message(err: &str) -> (&'static str, &str) {
@@ -259,16 +740,6 @@ fn map_error_status_and_message(err: &str) -> (&'static str, &str) {
     }
 }
 
-fn send_json_result(stream: TcpStream, res: Result<String, String>) {
-    match res {
-        Ok(body) => send_response(stream, "200 OK", "application/json; charset=utf-8", body.as_bytes()),
-        Err(err) => {
-            let (status, clean_msg) = map_error_status_and_message(&err);
-            let body = json!({ "success": false, "error": clean_msg }).to_string();
-            send_response(stream, status, "application/json; charset=utf-8", body.as_bytes());
-        }
-    }
-}
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html lang="vi">
@@ -415,7 +886,7 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
         <p>Full Anime Catalog, Search, Suggest, Schedule, Seasons/Episodes &amp; Direct-CDN HLS Stream (Rust Engine)</p>
       </div>
       <div class="nav-btns">
-        <a class="btn" href="/">▶️ Trình phát thử nghiệm (/)</a>
+        <a class="btn" href="/console">▶️ Trình phát thử nghiệm (/console)</a>
         <a class="btn" href="/health">🩺 Health (/health)</a>
         <a class="btn" href="https://github.com/Luongvanngoc123/source-phim" target="_blank">📦 GitHub Repo</a>
       </div>
@@ -708,6 +1179,9 @@ fn handle_client(
     stream_cache: StreamCacheMap,
     json_cache: JsonCacheMap,
     image_cache: ImageCacheMap,
+    banner_cache: BannerCacheMap,
+    banner_tx: Sender<Vec<String>>,
+    web_root: Option<PathBuf>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
@@ -727,20 +1201,57 @@ fn handle_client(
     }
     let method = parts[0];
     let full_path = parts[1];
-
+    let head_only = method == "HEAD";
     if method == "OPTIONS" {
-        send_response(stream, "204 No Content", "text/plain", b"");
+        send_response_with_head(stream, "204 No Content", "text/plain", b"", false);
         return;
     }
+    // API routes answer other methods as they always have; files are only ever read.
+    let may_serve_files = method == "GET" || head_only;
 
     let (path, query) = full_path.split_once('?').unwrap_or((full_path, ""));
 
     match path {
-        "/" | "/watch" => {
-            send_response(stream, "200 OK", "text/html; charset=utf-8", INDEX_HTML.as_bytes());
+        "/watch" | "/console" => {
+            send_response_with_head(
+                stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                INDEX_HTML.as_bytes(),
+                head_only,
+            );
+        }
+        "/" => {
+            if let Some(root) = web_root.as_ref().filter(|_| may_serve_files) {
+                if let Some(file) = resolve_static_file(root, path) {
+                    send_file_response(stream, "200 OK", &file, head_only);
+                } else {
+                    send_response_with_head(
+                        stream,
+                        "200 OK",
+                        "text/html; charset=utf-8",
+                        INDEX_HTML.as_bytes(),
+                        head_only,
+                    );
+                }
+            } else {
+                send_response_with_head(
+                    stream,
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    INDEX_HTML.as_bytes(),
+                    head_only,
+                );
+            }
         }
         "/hdsd" | "/hdsd/" | "/docs" | "/docs/" => {
-            send_response(stream, "200 OK", "text/html; charset=utf-8", HDSD_HTML.as_bytes());
+            send_response_with_head(
+                stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                HDSD_HTML.as_bytes(),
+                head_only,
+            );
         }
         "/health" => {
             let s_count = stream_cache.lock().map(|g| g.len()).unwrap_or(0);
@@ -756,7 +1267,9 @@ fn handle_client(
                 "cached_streams": s_count,
                 "cached_pages": m_count,
                 "cached_images": i_count,
+                "web_root": web_root.is_some(),
                 "endpoints": [
+                    "/console",
                     "/hdsd",
                     "/api/home",
                     "/api/schedule",
@@ -775,25 +1288,32 @@ fn handle_client(
                 ]
             })
             .to_string();
-            send_response(stream, "200 OK", "application/json; charset=utf-8", body.as_bytes());
+            send_response_with_head(
+                stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                head_only,
+            );
         }
         "/api/image" | "/image" => {
             let url = parse_query_param(query, "url").unwrap_or_default();
-            handle_image_proxy(stream, &url, &image_cache);
+            handle_image_proxy(stream, &url, &image_cache, head_only);
         }
         p if p.starts_with("/data/") => {
-            handle_image_proxy(stream, p, &image_cache);
+            handle_image_proxy(stream, p, &image_cache, head_only);
         }
         "/api/home" | "/home" => {
             let page = parse_page_param(query);
             let key = format!("home:{page}");
-            let res = get_or_fetch_json(&key, &json_cache, || fetch_home_page(page));
-            send_json_result(stream, res);
+            let res = get_or_fetch_json(&key, &json_cache, || fetch_home_page(page))
+                .map(|body| decorate_home_response(body, &banner_cache, &banner_tx));
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/schedule" | "/schedule" => {
             let res = get_or_fetch_json("schedule", &json_cache, fetch_schedule)
                 .map(|body| refresh_cached_schedule_countdowns(&body));
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/upcoming" | "/upcoming" => {
             let page = parse_page_param(query);
@@ -801,23 +1321,23 @@ fn handle_client(
             let res = get_or_fetch_json(&key, &json_cache, || {
                 fetch_catalog_list("anime-sap-chieu", page)
             });
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/movies" | "/movies" => {
             let page = parse_page_param(query);
             let key = format!("movies:{page}");
             let res = get_or_fetch_json(&key, &json_cache, || fetch_catalog_list("anime-le", page));
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/series" | "/series" => {
             let page = parse_page_param(query);
             let key = format!("series:{page}");
             let res = get_or_fetch_json(&key, &json_cache, || fetch_catalog_list("anime-bo", page));
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/genres" | "/genres" => {
             let res = get_or_fetch_json("genres", &json_cache, fetch_genres_and_seasons);
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/genre" | "/genre" => {
             let slug = parse_query_param(query, "slug").unwrap_or_else(|| "hanh-dong".to_string());
@@ -826,14 +1346,14 @@ fn handle_client(
             let res = get_or_fetch_json(&key, &json_cache, || {
                 fetch_catalog_list(&format!("the-loai/{}", slug.trim_matches('/')), page)
             });
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/catalog" | "/catalog" => {
             let cat_path = parse_query_param(query, "path").unwrap_or_default();
             let page = parse_page_param(query);
             let key = format!("catalog:{cat_path}:{page}");
             let res = get_or_fetch_json(&key, &json_cache, || fetch_catalog_list(&cat_path, page));
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/suggest" | "/suggest" => {
             let q = parse_query_param(query, "q")
@@ -841,7 +1361,7 @@ fn handle_client(
                 .unwrap_or_default();
             let key = format!("suggest:{}", q.trim().to_lowercase());
             let res = get_or_fetch_json(&key, &json_cache, || suggest_anime(&q));
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/search" | "/search" => {
             let q = parse_query_param(query, "q")
@@ -850,7 +1370,7 @@ fn handle_client(
             let page = parse_page_param(query);
             let key = format!("search:{}:{page}", q.trim().to_lowercase());
             let res = get_or_fetch_json(&key, &json_cache, || search_anime(&q, page));
-            send_json_result(stream, res);
+            send_json_result_with_head(stream, res, head_only);
         }
         "/api/anime" | "/anime" | "/api/info" | "/info" => {
             let slug = parse_query_param(query, "slug")
@@ -861,12 +1381,18 @@ fn handle_client(
                 Some(s) => {
                     let key = format!("anime:{s}");
                     let res = get_or_fetch_json(&key, &json_cache, || fetch_anime_detail(&s));
-                    send_json_result(stream, res);
+                    if let Ok(body) = &res {
+                        if let Ok(detail) = serde_json::from_str::<Value>(body) {
+                            remember_banner(&banner_cache, &s, &detail);
+                        }
+                    }
+                    send_json_result_with_head(stream, res, head_only);
                 }
                 None => {
-                    send_json_result(
+                    send_json_result_with_head(
                         stream,
                         Err("BAD_REQUEST: Missing required query parameter: slug".into()),
+                        head_only,
                     );
                 }
             }
@@ -877,23 +1403,25 @@ fn handle_client(
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
             let Some(target) = target else {
-                send_json_result(
+                send_json_result_with_head(
                     stream,
                     Err("BAD_REQUEST: Missing required query parameter: url or id".into()),
+                    head_only,
                 );
                 return;
             };
             match get_or_extract(&target, &stream_cache) {
                 Ok((_cached, res)) => {
-                    send_response(
+                    send_response_with_head(
                         stream,
                         "200 OK",
                         "application/vnd.apple.mpegurl; charset=utf-8",
                         res.m3u8.as_bytes(),
+                        head_only,
                     );
                 }
                 Err(err) => {
-                    send_json_result(stream, Err(err));
+                    send_json_result_with_head(stream, Err(err), head_only);
                 }
             }
         }
@@ -903,9 +1431,10 @@ fn handle_client(
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
             let Some(target) = target else {
-                send_json_result(
+                send_json_result_with_head(
                     stream,
                     Err("BAD_REQUEST: Missing required query parameter: url or id".into()),
+                    head_only,
                 );
                 return;
             };
@@ -922,33 +1451,71 @@ fn handle_client(
                         "m3u8": res.m3u8
                     })
                     .to_string();
-                    send_response(
+                    send_response_with_head(
                         stream,
                         "200 OK",
                         "application/json; charset=utf-8",
                         body.as_bytes(),
+                        head_only,
                     );
                 }
                 Err(err) => {
-                    send_json_result(stream, Err(err));
+                    send_json_result_with_head(stream, Err(err), head_only);
                 }
             }
         }
         _ => {
-            let body = json!({
-                "success": false,
-                "error": "Not Found",
-                "docs": "https://cdn1.lvn123.site/hdsd"
+            if let Some(root) = web_root.as_ref().filter(|_| {
+                may_serve_files && path != "/api" && !path.starts_with("/api/")
             })
-            .to_string();
-            send_response(
-                stream,
-                "404 Not Found",
-                "application/json; charset=utf-8",
-                body.as_bytes(),
-            );
+            {
+                if let Some(file) = resolve_static_file(root, path) {
+                    send_file_response(stream, "200 OK", &file, head_only);
+                } else if let Some(file) = resolve_static_file(root, "/404.html") {
+                    send_file_response(stream, "404 Not Found", &file, head_only);
+                } else {
+                    let body = json!({
+                        "success": false,
+                        "error": "Not Found",
+                        "docs": "https://cdn1.lvn123.site/hdsd"
+                    })
+                    .to_string();
+                    send_response_with_head(
+                        stream,
+                        "404 Not Found",
+                        "application/json; charset=utf-8",
+                        body.as_bytes(),
+                        head_only,
+                    );
+                }
+            } else {
+                let body = json!({
+                    "success": false,
+                    "error": "Not Found",
+                    "docs": "https://cdn1.lvn123.site/hdsd"
+                })
+                .to_string();
+                send_response_with_head(
+                    stream,
+                    "404 Not Found",
+                    "application/json; charset=utf-8",
+                    body.as_bytes(),
+                    head_only,
+                );
+            }
         }
     }
+}
+
+fn configured_web_root() -> Option<PathBuf> {
+    let configured = env::var_os("WEB_ROOT")?;
+    let root = fs::canonicalize(configured).ok()?;
+    if !fs::metadata(&root).ok()?.is_dir()
+        || !fs::metadata(root.join("index.html")).ok()?.is_file()
+    {
+        return None;
+    }
+    Some(root)
 }
 
 fn run_server(bind_addr: &str) {
@@ -960,13 +1527,30 @@ fn run_server(bind_addr: &str) {
     let stream_cache: StreamCacheMap = Arc::new(Mutex::new(HashMap::new()));
     let json_cache: JsonCacheMap = Arc::new(Mutex::new(HashMap::new()));
     let image_cache: ImageCacheMap = Arc::new(Mutex::new(HashMap::new()));
+    let banner_cache: BannerCacheMap = Arc::new(Mutex::new(BannerCache::default()));
+    let (banner_tx, banner_rx) = mpsc::channel();
+    let worker_json_cache = Arc::clone(&json_cache);
+    let worker_banner_cache = Arc::clone(&banner_cache);
+    let worker_startup_tx = banner_tx.clone();
+    thread::spawn(move || {
+        run_banner_worker(
+            worker_json_cache,
+            worker_banner_cache,
+            banner_rx,
+            worker_startup_tx,
+        )
+    });
+    let web_root = configured_web_root();
 
     for stream in listener.incoming().flatten() {
         let sc = Arc::clone(&stream_cache);
         let jc = Arc::clone(&json_cache);
         let ic = Arc::clone(&image_cache);
+        let bc = Arc::clone(&banner_cache);
+        let bt = banner_tx.clone();
+        let root = web_root.clone();
         thread::spawn(move || {
-            handle_client(stream, sc, jc, ic);
+            handle_client(stream, sc, jc, ic, bc, bt, root);
         });
     }
 }
@@ -1018,5 +1602,99 @@ fn main() {
             eprintln!("[ERR] Extraction failed: {err}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_root() -> PathBuf {
+        let root = env::temp_dir().join(format!(
+            "avs-static-test-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        fs::create_dir_all(root.join("phim/[slug]/[tap]")).expect("create test tree");
+        fs::create_dir_all(root.join("phim")).expect("create phim");
+        fs::create_dir_all(root.join("_next/static")).expect("create assets");
+        fs::write(root.join("index.html"), b"index").expect("write index");
+        fs::write(root.join("404.html"), b"not found").expect("write 404");
+        fs::write(root.join("exact.js"), b"exact").expect("write exact");
+        fs::write(root.join("about.html"), b"about").expect("write html");
+        fs::write(root.join("phim/index.html"), b"phim index").expect("write phim index");
+        fs::write(root.join("phim/[slug].html"), b"film").expect("write film");
+        fs::write(root.join("phim/[slug]/[tap].html"), b"episode").expect("write episode");
+        root
+    }
+
+    #[test]
+    fn resolves_static_export_routes() {
+        let root = test_root();
+        assert_eq!(
+            fs::read(resolve_static_file(&root, "/exact.js").expect("exact").path).unwrap(),
+            b"exact"
+        );
+        assert_eq!(
+            fs::read(resolve_static_file(&root, "/about").expect("html suffix").path).unwrap(),
+            b"about"
+        );
+        assert_eq!(
+            fs::read(resolve_static_file(&root, "/").expect("index").path).unwrap(),
+            b"index"
+        );
+        assert_eq!(
+            fs::read(resolve_static_file(&root, "/phim/").expect("trailing slash").path).unwrap(),
+            b"phim index"
+        );
+        assert_eq!(
+            fs::read(resolve_static_file(&root, "/phim/abc").expect("last param").path).unwrap(),
+            b"film"
+        );
+        assert_eq!(
+            fs::read(
+                resolve_static_file(&root, "/phim/abc/tap-01-1")
+                    .expect("inner and last params")
+                    .path
+            )
+            .unwrap(),
+            b"episode"
+        );
+        assert!(resolve_static_file(&root, "/../Cargo.toml").is_none());
+        assert!(resolve_static_file(&root, "/..%2f..%2fCargo.toml").is_none());
+        assert!(resolve_static_file(&root, "/.env").is_none());
+        assert!(resolve_static_file(&root, "/missing").is_none());
+        assert!(resolve_static_file(&root.join("does-not-exist"), "/").is_none());
+        fs::remove_dir_all(root).expect("remove test tree");
+    }
+
+    #[test]
+    fn image_cache_stays_within_byte_cap() {
+        let mut cache = HashMap::new();
+        let body_size = IMAGE_CACHE_MAX_BYTES / 2;
+        cache_image(
+            &mut cache,
+            "one".into(),
+            "image/png".into(),
+            vec![0; body_size],
+        );
+        thread::sleep(Duration::from_millis(1));
+        cache_image(
+            &mut cache,
+            "two".into(),
+            "image/png".into(),
+            vec![0; body_size],
+        );
+        thread::sleep(Duration::from_millis(1));
+        cache_image(
+            &mut cache,
+            "three".into(),
+            "image/png".into(),
+            vec![0; body_size],
+        );
+        let total: usize = cache.values().map(|(_, _, bytes)| bytes.len()).sum();
+        assert!(total <= IMAGE_CACHE_MAX_BYTES);
+        assert!(!cache.contains_key("one"));
+        assert!(cache.contains_key("three"));
     }
 }
