@@ -1,8 +1,0 @@
-**
-!web/
-!web/**
-!gateway/
-!gateway/**
-**/node_modules
-**/target
-web/dist

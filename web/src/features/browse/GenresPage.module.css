@@ -1,8 +1,0 @@
-.page {
-  display: grid;
-  gap: var(--s5);
-}
-
-.page > section {
-  margin-top: var(--s7);
-}

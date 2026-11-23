@@ -16,7 +16,7 @@ Bộ công cụ giải mã tĩnh 2 lớp mật mã của player `stream.googleap
 ```text
 ├── README.md                       # Hướng dẫn sử dụng chi tiết
 ├── API_SPEC.md                     # Đặc tả toàn bộ Client-side API & giao thức giải mã
-├── Dockerfile                      # Multi-stage Docker build (Rust -> debian:bookworm-slim ~25MB)
+├── Dockerfile                      # Multi-stage Docker build (Node build giao diện + Rust -> debian:bookworm-slim)
 ├── docker-compose.yml              # Cấu hình chạy container tự động khởi động lại
 ├── direct_m3u8_extractor.py        # Module giải mã viết bằng Python thuần
 ├── direct_cdn_playlist.m3u8        # File playlist mẫu đã giải mã hoàn chỉnh (311 segments Google CDN)
@@ -26,8 +26,7 @@ Bộ công cụ giải mã tĩnh 2 lớp mật mã của player `stream.googleap
 │   └── src/
 │       ├── lib.rs                  # Lõi giải mã 2 lớp In-place (Zero-Regex, u32 index)
 │       └── main.rs                 # HTTP API Server đa luồng kèm bộ nhớ đệm TTL 30 phút & CLI
-├── gateway/                        # Java 21 Spring Boot: phục vụ bản build React, chuyển tiếp /api/** tới Rust engine
-├── web/                            # Giao diện Animora (React + TypeScript + Vite)
+├── web/                            # Giao diện web (Next.js 16, xuất tĩnh ra web/out); engine Rust phục vụ trực tiếp
 └── sources/                        # Mã nguồn JS client-side đã làm sạch
 ```
 
@@ -104,53 +103,53 @@ Trang nguồn đổi tên miền mỗi khi tên miền đang dùng bị chặn. 
 
 ---
 
-## Giao diện web Animora (React + Java gateway)
+## Giao diện web (Next.js xuất tĩnh, do engine Rust phục vụ)
 
-Giao diện xem phim nằm ở `web/` (React + TypeScript + Vite) và được phục vụ bởi `gateway/` (Java 21, Spring Boot). Mọi dữ liệu đều lấy qua Rust engine tại `https://cdn1.lvn123.site`; không cần chạy engine trên máy phát triển.
+Giao diện nằm ở `web/`: một ứng dụng Next.js 16 (pages router) được build một lần thành file tĩnh (`web/out`). Lúc chạy, máy chủ chỉ có **một tiến trình Rust**: engine vừa trả API vừa trả file của giao diện. Không có Node, Java, MongoDB hay Redis.
 
 | Thành phần | Việc nó làm |
 |---|---|
-| `web/` | SPA: trang chủ, lịch chiếu, danh mục, thể loại, mùa, tìm kiếm, chi tiết phim, trình phát HLS (`hls.js` + `DirectGoogleCdnLoader`) |
-| `gateway/` | Trả file tĩnh của `web/dist` (route của SPA rơi về `index.html`), chuyển tiếp nguyên vẹn `GET /api/**` tới engine, nén gzip, đặt `Cache-Control` |
-| Rust engine | Cào dữ liệu, giải mã `.m3u8`, proxy ảnh `/data/**` (không đổi) |
+| `web/` | Trang chủ, Anime bộ, Anime lẻ, Sắp chiếu, thể loại, mùa, chủ đề, tìm kiếm, lịch chiếu, chi tiết phim, trang xem (`hls.js` + `DirectGoogleCdnLoader`) |
+| Rust engine | Cào dữ liệu, giải mã `.m3u8`, proxy ảnh `/data/**`, trả file tĩnh trong `WEB_ROOT` |
 
 Trình duyệt chỉ gọi `/api/...` cùng origin. Ảnh poster/banner được tải thẳng từ URL `https://cdn1.lvn123.site/data/...` có sẵn trong JSON; segment video được tải thẳng từ `lh3.googleusercontent.com`.
+
+### Engine trả file của giao diện thế nào
+
+Với mỗi đường dẫn không phải API, engine tìm trong `WEB_ROOT` theo thứ tự: đúng file đó, `<đường dẫn>.html`, `<đường dẫn>/index.html`, rồi tới các route động của Next (thư mục hoặc file tên `[tham số]`, ví dụ `/phim/abc/tap-01-1` trả `phim/[slug]/[tap].html`); không khớp thì trả `404.html` với mã 404.
+
+- `/_next/static/**` là `immutable` 1 năm, file `.html` là `no-cache`, file tĩnh khác là 1 ngày.
+- Các đường dẫn API giữ nguyên và được ưu tiên: `/api/**`, `/data/**`, `/health`, `/hdsd`. Trang thử API trước đây ở `/` nay ở `/console`.
+- Không đặt `WEB_ROOT` (hoặc thư mục không có `index.html`) thì engine chỉ phục vụ API như trước.
 
 ### Phát triển giao diện
 
 ```bash
 cd web
 npm install
-npm run dev        # http://localhost:5173, /api được proxy tới https://cdn1.lvn123.site
+NEXT_PUBLIC_API_BASE=https://cdn1.lvn123.site npm run dev   # http://localhost:3000, gọi API thẳng tới engine (engine bật CORS)
 ```
 
-- `API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev` để dev server đi qua gateway chạy trên máy.
-- `npm test` (vitest), `npm run lint` (oxlint), `npm run format` (prettier).
-
-### Build và chạy
+### Build và chạy trên máy
 
 ```bash
-cd web && npm ci && npm run build        # tạo web/dist
-cd ../gateway && ./mvnw package          # Windows: mvnw.cmd package; cần JAVA_HOME trỏ tới JDK 21
-java -jar target/gateway.jar             # http://localhost:8080
+cd web && npm ci && npm run build                 # tạo web/out
+cd ../rust_extractor && cargo build --release
+WEB_ROOT=../web/out ./target/release/avs_direct_m3u8 --serve 127.0.0.1:8095   # http://127.0.0.1:8095
 ```
 
 | Biến môi trường | Mặc định | Ý nghĩa |
 |---|---|---|
-| `ENGINE_URL` | `https://cdn1.lvn123.site` | Rust engine nhận các request `/api/**` |
-| `WEB_ROOT` | `file:../web/dist/` | Thư mục bản build React, dạng resource location của Spring, kết thúc bằng `/` |
-| `PORT` | `8080` | Cổng gateway |
-
-Cache của gateway: `/assets/**` là `immutable` 1 năm, `index.html` là `no-cache`, JSON `200` là `public, max-age=60`; `/api/playlist.m3u8`, `/api/extract` và mọi phản hồi lỗi là `no-store`.
+| `WEB_ROOT` | không đặt (image Docker đặt `/app/web`) | Thư mục chứa bản xuất tĩnh của `web/` |
+| `NEXT_PUBLIC_API_BASE` | rỗng (cùng origin) | Chỉ dùng khi build/dev giao diện: gốc URL của engine |
 
 ### Docker
 
 ```bash
-docker build -f gateway/Dockerfile -t animora-web .
-docker run -d --name animora-web --restart unless-stopped -p 127.0.0.1:8080:8080 animora-web
+docker compose up -d --build
 ```
 
-Image build `web/` bằng Node, build `gateway/` bằng Maven rồi chạy trên `eclipse-temurin:21-jre`. Đổi engine bằng `-e ENGINE_URL=...`.
+Image build `web/` bằng Node (chỉ ở bước build), build engine bằng Rust; image chạy chỉ chứa binary và bản xuất tĩnh.
 
 ---
 
