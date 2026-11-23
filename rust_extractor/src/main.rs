@@ -4,13 +4,13 @@ use avs_direct_m3u8::{
         fetch_anime_detail, fetch_catalog_list, fetch_genres_and_seasons, fetch_home_page,
         fetch_schedule, refresh_cached_schedule_countdowns, search_anime, suggest_anime,
     },
-    DirectM3u8Result,
+    DirectM3u8Result, DEFAULT_UA,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,9 +18,11 @@ use std::time::{Duration, Instant};
 
 type StreamCacheMap = Arc<Mutex<HashMap<String, (Instant, DirectM3u8Result)>>>;
 type JsonCacheMap = Arc<Mutex<HashMap<String, (Instant, String)>>>;
+type ImageCacheMap = Arc<Mutex<HashMap<String, (Instant, String, Vec<u8>)>>>;
 
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(1800); // 30 minutes
 const META_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
+const IMAGE_CACHE_TTL: Duration = Duration::from_secs(86400); // 24 hours
 
 fn percent_decode(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
@@ -123,12 +125,128 @@ fn send_response(
          Access-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
          Access-Control-Allow-Headers: *\r\n\
+         Cross-Origin-Resource-Policy: cross-origin\r\n\
          Connection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body);
     let _ = stream.flush();
+}
+
+fn send_image_response(
+    mut stream: TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) {
+    let header = format!(
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {}\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+         Cross-Origin-Resource-Policy: cross-origin\r\n\
+         Cache-Control: public, max-age=2592000, immutable\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+    let _ = stream.flush();
+}
+
+fn handle_image_proxy(stream: TcpStream, raw_target: &str, cache: &ImageCacheMap) {
+    let trimmed = raw_target.trim();
+    if trimmed.is_empty() {
+        send_json_result(
+            stream,
+            Err("BAD_REQUEST: Missing image path or url parameter".into()),
+        );
+        return;
+    }
+
+    let target_url = if trimmed.starts_with("/data/") {
+        format!("https://cdn.animevietsub.bid{trimmed}")
+    } else if let Some(pos) = trimmed.find("/data/") {
+        format!("https://cdn.animevietsub.bid{}", &trimmed[pos..])
+    } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        send_json_result(
+            stream,
+            Err("BAD_REQUEST: Invalid image URL".into()),
+        );
+        return;
+    };
+
+    {
+        let mut guard = cache.lock().unwrap();
+        if let Some((ts, ct, bytes)) = guard.get(&target_url) {
+            if ts.elapsed() < IMAGE_CACHE_TTL {
+                send_image_response(stream, "200 OK", ct, bytes);
+                return;
+            } else {
+                guard.remove(&target_url);
+            }
+        }
+    }
+
+    let agent = ureq::AgentBuilder::new()
+        .user_agent(DEFAULT_UA)
+        .timeout(Duration::from_secs(12))
+        .build();
+
+    let resp = match agent
+        .get(&target_url)
+        .set("Referer", "https://animevietsub.bid/")
+        .call()
+    {
+        Ok(r) => r,
+        Err(ureq::Error::Status(404, _)) => {
+            send_json_result(stream, Err("NOT_FOUND: Image not found".into()));
+            return;
+        }
+        Err(e) => {
+            send_json_result(stream, Err(format!("Upstream image fetch failed: {e}")));
+            return;
+        }
+    };
+
+    let content_type = resp
+        .header("Content-Type")
+        .unwrap_or_else(|| {
+            if target_url.ends_with(".png") {
+                "image/png"
+            } else if target_url.ends_with(".webp") {
+                "image/webp"
+            } else {
+                "image/jpeg"
+            }
+        })
+        .to_string();
+
+    let mut body = Vec::with_capacity(40960);
+    if resp.into_reader().read_to_end(&mut body).is_err() {
+        send_json_result(stream, Err("Failed to read upstream image body".into()));
+        return;
+    }
+
+    if body.len() <= 256 * 1024 {
+        let mut guard = cache.lock().unwrap();
+        if guard.len() >= 120 {
+            let keys: Vec<String> = guard.keys().take(25).cloned().collect();
+            for k in keys {
+                guard.remove(&k);
+            }
+        }
+        guard.insert(
+            target_url,
+            (Instant::now(), content_type.clone(), body.clone()),
+        );
+    }
+
+    send_image_response(stream, "200 OK", &content_type, &body);
 }
 
 fn map_error_status_and_message(err: &str) -> (&'static str, &str) {
@@ -393,6 +511,13 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
         <span class="url">https://cdn1.lvn123.site/api/extract?url=&lt;watch_url_or_player_url_or_id&gt;</span>
         <p style="margin:6px 0 0;font-size:13.5px;">Trả JSON chứa metadata luồng phát, trạng thái cache, số lượng segment, nội dung <code>m3u8</code> và chuỗi <code>m3u8_data_uri</code>.</p>
       </div>
+
+      <div class="endpoint-box">
+        <a class="try-link" href="/data/poster/animevsub-P0miGCR3CY.jpg" target="_blank">Mở thử ↗</a>
+        <span class="method">GET</span>
+        <span class="url">https://cdn1.lvn123.site/data/poster/&lt;file&gt;.jpg</span> &amp; <span class="url">/api/image?url=&lt;image_url&gt;</span>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Proxy Ảnh Poster &amp; Banner (Bypass Cloudflare Challenge &amp; CORP <code>NotSameOrigin</code>):</b> Mọi trường <code>poster</code> và <code>banner</code> trong các API đều đã được tự động chuyển về <code>https://cdn1.lvn123.site/data/...</code> kèm header <code>Access-Control-Allow-Origin: *</code>, <code>Cross-Origin-Resource-Policy: cross-origin</code> và <code>Cache-Control: public, max-age=2592000, immutable</code>.</p>
+      </div>
     </div>
 
     <div class="card">
@@ -404,8 +529,8 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
   "type": "series",
   "title": "Black Clover 2nd Season",
   "sub_title": "Black Clover Season 2",
-  "poster": "https://cdn.animevietsub.bid/data/poster/animevsub-P0miGCR3CY.jpg",
-  "banner": "https://cdn.animevietsub.bid/data/big_banner/animevsub-I4Edz2vXVI.jpg",
+  "poster": "https://cdn1.lvn123.site/data/poster/animevsub-P0miGCR3CY.jpg",
+  "banner": "https://cdn1.lvn123.site/data/big_banner/animevsub-I4Edz2vXVI.jpg",
   "description": "Mùa 2 tập trung vào cuộc chiến tổng lực tại Vương quốc Spade...",
   "rating": "9.7",
   "rating_count": "612",
@@ -483,7 +608,12 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
 </body>
 </html>"#;
 
-fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: JsonCacheMap) {
+fn handle_client(
+    stream: TcpStream,
+    stream_cache: StreamCacheMap,
+    json_cache: JsonCacheMap,
+    image_cache: ImageCacheMap,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
     let mut reader = BufReader::new(match stream.try_clone() {
@@ -520,6 +650,7 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
         "/health" => {
             let s_count = stream_cache.lock().map(|g| g.len()).unwrap_or(0);
             let m_count = json_cache.lock().map(|g| g.len()).unwrap_or(0);
+            let i_count = image_cache.lock().map(|g| g.len()).unwrap_or(0);
             let body = json!({
                 "status": "ok",
                 "service": "avs-direct-m3u8-api",
@@ -527,6 +658,7 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
                 "docs_url": "https://cdn1.lvn123.site/hdsd",
                 "cached_streams": s_count,
                 "cached_pages": m_count,
+                "cached_images": i_count,
                 "endpoints": [
                     "/hdsd",
                     "/api/home",
@@ -539,12 +671,21 @@ fn handle_client(stream: TcpStream, stream_cache: StreamCacheMap, json_cache: Js
                     "/api/suggest?q=black+clover",
                     "/api/search?q=black+clover&page=1",
                     "/api/anime?slug=black-clover-2nd-season-a6073",
+                    "/data/poster/<file>.jpg",
+                    "/api/image?url=<image_url>",
                     "/api/playlist.m3u8?url=<watch_or_player_url>",
                     "/api/extract?url=<watch_or_player_url>"
                 ]
             })
             .to_string();
             send_response(stream, "200 OK", "application/json; charset=utf-8", body.as_bytes());
+        }
+        "/api/image" | "/image" => {
+            let url = parse_query_param(query, "url").unwrap_or_default();
+            handle_image_proxy(stream, &url, &image_cache);
+        }
+        p if p.starts_with("/data/") => {
+            handle_image_proxy(stream, p, &image_cache);
         }
         "/api/home" | "/home" => {
             let page = parse_page_param(query);
@@ -721,12 +862,14 @@ fn run_server(bind_addr: &str) {
     println!("[OK] AnimeVietSub Direct-CDN Rust API Server listening on http://{bind_addr}");
     let stream_cache: StreamCacheMap = Arc::new(Mutex::new(HashMap::new()));
     let json_cache: JsonCacheMap = Arc::new(Mutex::new(HashMap::new()));
+    let image_cache: ImageCacheMap = Arc::new(Mutex::new(HashMap::new()));
 
     for stream in listener.incoming().flatten() {
         let sc = Arc::clone(&stream_cache);
         let jc = Arc::clone(&json_cache);
+        let ic = Arc::clone(&image_cache);
         thread::spawn(move || {
-            handle_client(stream, sc, jc);
+            handle_client(stream, sc, jc, ic);
         });
     }
 }

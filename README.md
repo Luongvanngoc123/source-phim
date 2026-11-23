@@ -78,6 +78,10 @@ API đã được triển khai qua Docker (`avs-direct-m3u8-api`, chỉ chiếm 
   `GET https://cdn1.lvn123.site/api/search?q=black+clover&page=1`
 - **Thông tin chi tiết phim + Season (Phần 1/Phần 2/Movie/Special) + Danh sách Tập gọn nhẹ (trả `404` nếu sai `slug`):**
   `GET https://cdn1.lvn123.site/api/anime?slug=black-clover-2nd-season-a6073`
+- **Proxy Ảnh Poster & Banner (Tự động rewrite trong mọi API để vượt Cloudflare Managed Challenge & lỗi `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`):**
+  - `GET https://cdn1.lvn123.site/data/poster/animevsub-P0miGCR3CY.jpg`
+  - `GET https://cdn1.lvn123.site/data/big_banner/animevsub-I4Edz2vXVI.jpg`
+  - `GET https://cdn1.lvn123.site/api/image?url=https://cdn.animevietsub.bid/data/poster/animevsub-P0miGCR3CY.jpg`
 - **Xuất trực tiếp file `.m3u8` (nhúng sẵn khóa AES-128 & các link `lh3.googleusercontent.com`, trả `404` nếu link tập không tồn tại):**
   `GET https://cdn1.lvn123.site/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html`
 - **Xuất JSON đầy đủ (`player_id`, `segment_count`, `m3u8`, `m3u8_data_uri`):**

@@ -163,6 +163,24 @@ pub fn extract_film_id_from_slug(slug: &str) -> Option<String> {
     None
 }
 
+/// Rewrite `https://cdn.animevietsub.bid/data/...` image URLs to go through our
+/// Direct-CDN Image Proxy (`https://cdn1.lvn123.site/data/...`) so browsers on any
+/// origin and clients behind Cloudflare WARP never hit Cloudflare challenge or
+/// `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`.
+pub fn proxy_image_url(raw_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let base = std::env::var("PUBLIC_CDN_ORIGIN")
+        .unwrap_or_else(|_| "https://cdn1.lvn123.site".to_string());
+    let base = base.trim_end_matches('/');
+    if let Some(pos) = trimmed.find("/data/") {
+        return format!("{base}{}", &trimmed[pos..]);
+    }
+    trimmed.to_string()
+}
+
 /// Match only `<li class="TPostMv">` list items (avoids matching `<div class="TPostMv">` in top owl-carousel).
 pub fn parse_tpost_list(html: &str) -> Vec<Value> {
     let mut items = Vec::new();
@@ -190,8 +208,8 @@ pub fn parse_tpost_list(html: &str) -> Vec<Value> {
 
         let poster = extract_between(block, "<img ", ">")
             .and_then(|img_tag| extract_attr(img_tag, "src"))
-            .unwrap_or_default()
-            .to_string();
+            .map(proxy_image_url)
+            .unwrap_or_default();
 
         let episode_badge = extract_between(block, "<span class=\"mli-eps\">", "</span>")
             .map(clean_html_text);
@@ -680,6 +698,7 @@ pub fn suggest_anime(query: &str) -> Result<Value, String> {
         let slug = extract_slug_from_url(href);
         let poster = extract_between(block, "url('", "')")
             .or_else(|| extract_between(block, "url(\"", "\")"))
+            .map(proxy_image_url)
             .unwrap_or_default();
         let title = extract_between(block, "class=\"ss-title\">", "</a>")
             .map(clean_html_text)
@@ -762,13 +781,13 @@ pub fn fetch_anime_detail(slug_or_url: &str) -> Result<Value, String> {
     let poster = extract_between(single_block, "<figure class=\"Objf\">", "</figure>")
         .and_then(|f| extract_between(f, "<img ", ">"))
         .and_then(|img| extract_attr(img, "src"))
-        .unwrap_or_default()
-        .to_string();
+        .map(proxy_image_url)
+        .unwrap_or_default();
     let banner = extract_between(single_block, "class=\"TPostBg Objf\">", "</div>")
         .and_then(|b| extract_between(b, "<img ", ">"))
         .and_then(|img| extract_attr(img, "src"))
-        .unwrap_or_default()
-        .to_string();
+        .map(proxy_image_url)
+        .unwrap_or_default();
     let description = extract_between(single_block, "<div class=\"Description\">", "</div>")
         .map(clean_html_text)
         .unwrap_or_default();
