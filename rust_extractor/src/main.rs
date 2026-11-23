@@ -319,6 +319,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       <div>• <b><a href="/api/suggest?q=black+clover">GET /api/suggest?q=black+clover</a></b> — Gợi ý tìm kiếm siêu tốc khi đang gõ (chỉ 1 request <code>/ajax/suggest</code>)</div>
       <div>• <b><a href="/api/search?q=black+clover&page=1">GET /api/search?q=black+clover&amp;page=1</a></b> — Tìm kiếm phim đầy đủ có phân trang</div>
       <div>• <b><a href="/api/anime?slug=black-clover-2nd-season-a6073">GET /api/anime?slug=black-clover-2nd-season-a6073</a></b> — Chi tiết phim, Season &amp; danh sách Tập gọn nhẹ (trả 404 nếu sai slug)</div>
+      <div>• <b><a href="/data/poster/animevsub-P0miGCR3CY.jpg">GET /data/poster/&lt;file&gt;.jpg</a></b> &amp; <b><a href="/api/image?url=https://cdn.animevietsub.bid/data/poster/animevsub-P0miGCR3CY.jpg">GET /api/image?url=&lt;url&gt;</a></b> — Proxy ảnh Poster/Banner vượt Cloudflare Challenge &amp; lỗi <code>NotSameOrigin</code></div>
       <div>• <b><a href="/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html">GET /api/playlist.m3u8?url=&lt;watch_or_player_url&gt;</a></b> — Xuất trực tiếp file .m3u8 chuẩn (trả 404 nếu link tập không tồn tại)</div>
     </div>
   </div>
@@ -496,13 +497,52 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2>2. API Giải mã Stream Video HLS Direct-CDN (0 Server Bandwidth)</h2>
+      <h2>2. API Proxy Ảnh Poster &amp; Banner (Bypass Cloudflare Challenge &amp; CORP <code>NotSameOrigin</code>)</h2>
+      <p style="margin:0 0 12px;font-size:14px;color:#cbd5e1;">
+        Host gốc <code>cdn.animevietsub.bid</code> bật <b>Cloudflare Managed Challenge</b> (<code>cf-mitigated: challenge</code>) đối với mạng bật WARP/VPN và trả kèm header <code>Cross-Origin-Resource-Policy: same-origin</code> khiến trình duyệt ở domain khác bị lỗi <code>ERR_BLOCKED_BY_RESPONSE.NotSameOrigin</code>. Hệ thống đã tích hợp sẵn bộ <b>Image Proxy có RAM Cache (TTL 24h)</b> và <b>tự động rewrite toàn bộ trường <code>poster</code>, <code>banner</code> trong mọi JSON API</b> sang domain <code>https://cdn1.lvn123.site/data/...</code>.
+      </p>
+
+      <div class="endpoint-box">
+        <a class="try-link" href="/data/poster/animevsub-P0miGCR3CY.jpg" target="_blank">Mở ảnh Poster mẫu ↗</a>
+        <span class="method">GET</span>
+        <span class="url">https://cdn1.lvn123.site/data/poster/&lt;ten_file&gt;.jpg</span>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Đường dẫn trực tiếp cho Poster:</b> Tự động trả về trong trường <code>poster</code> của tất cả API (<code>/api/home</code>, <code>/api/schedule</code>, <code>/api/upcoming</code>, <code>/api/movies</code>, <code>/api/series</code>, <code>/api/genre</code>, <code>/api/search</code>, <code>/api/suggest</code>, <code>/api/anime</code>). Kèm sẵn header <code>Access-Control-Allow-Origin: *</code>, <code>Cross-Origin-Resource-Policy: cross-origin</code> và <code>Cache-Control: public, max-age=2592000, immutable</code> (cache 30 ngày).</p>
+      </div>
+
+      <div class="endpoint-box">
+        <a class="try-link" href="/data/big_banner/animevsub-I4Edz2vXVI.jpg" target="_blank">Mở ảnh Banner mẫu ↗</a>
+        <span class="method">GET</span>
+        <span class="url">https://cdn1.lvn123.site/data/big_banner/&lt;ten_file&gt;.jpg</span>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Đường dẫn trực tiếp cho Big Banner:</b> Tự động trả về trong trường <code>banner</code> của <code>GET /api/anime?slug=...</code>.</p>
+      </div>
+
+      <div class="endpoint-box">
+        <a class="try-link" href="/api/image?url=https://cdn.animevietsub.bid/data/poster/animevsub-0dfhZ0TW1G.jpg" target="_blank">Mở thử ↗</a>
+        <span class="method">GET</span>
+        <span class="url">https://cdn1.lvn123.site/api/image?url=&lt;url_anh_goc_hoac_path&gt;</span>
+        <p style="margin:6px 0 0;font-size:13.5px;"><b>Endpoint Proxy tùy chọn qua query param:</b> Truyền bất kỳ URL ảnh gốc nào của <code>cdn.animevietsub.bid</code> vào tham số <code>?url=</code> để tải ảnh vượt qua Cloudflare Challenge &amp; CORP.</p>
+      </div>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;background:#080a0f;border:1px solid #1e293b;border-radius:10px;padding:12px 16px;margin-top:12px;">
+        <img src="/data/poster/animevsub-P0miGCR3CY.jpg" alt="Poster Preview" style="height:110px;border-radius:8px;border:1px solid #334155;" />
+        <img src="/data/big_banner/animevsub-I4Edz2vXVI.jpg" alt="Banner Preview" style="height:110px;border-radius:8px;border:1px solid #334155;max-width:100%;object-fit:cover;" />
+        <div style="font-size:13px;color:#94a3b8;flex:1;min-width:220px;">
+          <b style="color:#34d399;">✓ Live Preview ngay trên trình duyệt:</b><br/>
+          Hai ảnh bên cạnh được tải trực tiếp qua <code>/data/poster/...</code> và <code>/data/big_banner/...</code> với header <code>Cross-Origin-Resource-Policy: cross-origin</code>.
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3. API Giải mã Stream Video HLS Direct-CDN (0 Server Bandwidth)</h2>
 
       <div class="endpoint-box">
         <a class="try-link" href="/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html" target="_blank">Mở thử ↗</a>
         <span class="method">GET</span>
         <span class="url">https://cdn1.lvn123.site/api/playlist.m3u8?url=&lt;watch_url_or_player_url_or_id&gt;</span>
-        <p style="margin:6px 0 0;font-size:13.5px;">Nhận trực tiếp link tập phim (<code>watch_url</code> từ <code>/api/anime</code>), link <code>stream.googleapiscdn.com/player/&lt;id&gt;</code> hoặc mã hash 64 ký tự và trả về file <code>#EXTM3U</code> chuẩn chứa khóa AES-128 inline cùng các segment <code>https://lh3.googleusercontent.com/...=d</code>. Nếu link tập không tồn tại hoặc không thuộc về bộ phim đó, API trả chuẩn <code>404 Not Found</code> (<code>{"success": false, "error": "..."}</code>).</p>
+        <p style="margin:6px 0 0;font-size:13.5px;">Nhận trực tiếp link tập phim (<code>watch_url</code> từ <code>/api/anime</code>), link <code>stream.googleapiscdn.com/player/&lt;id&gt;</code> hoặc mã hash 64 ký tự và trả về file <code>#EXTM3U</code> chuẩn chứa khóa AES-128 inline cùng các segment <code>https://lh3.googleusercontent.com/...=d</code>.<br/>
+        • Nếu thiếu tham số <code>url</code>/<code>id</code>: trả HTTP <code>400 Bad Request</code>.<br/>
+        • Nếu link tập không tồn tại hoặc <code>episode_id</code> không thuộc về bộ phim đó: trả HTTP <code>404 Not Found</code> (<code>{"success": false, "error": "..."}</code>).</p>
       </div>
 
       <div class="endpoint-box">
@@ -511,17 +551,72 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
         <span class="url">https://cdn1.lvn123.site/api/extract?url=&lt;watch_url_or_player_url_or_id&gt;</span>
         <p style="margin:6px 0 0;font-size:13.5px;">Trả JSON chứa metadata luồng phát, trạng thái cache, số lượng segment, nội dung <code>m3u8</code> và chuỗi <code>m3u8_data_uri</code>.</p>
       </div>
-
-      <div class="endpoint-box">
-        <a class="try-link" href="/data/poster/animevsub-P0miGCR3CY.jpg" target="_blank">Mở thử ↗</a>
-        <span class="method">GET</span>
-        <span class="url">https://cdn1.lvn123.site/data/poster/&lt;file&gt;.jpg</span> &amp; <span class="url">/api/image?url=&lt;image_url&gt;</span>
-        <p style="margin:6px 0 0;font-size:13.5px;"><b>Proxy Ảnh Poster &amp; Banner (Bypass Cloudflare Challenge &amp; CORP <code>NotSameOrigin</code>):</b> Mọi trường <code>poster</code> và <code>banner</code> trong các API đều đã được tự động chuyển về <code>https://cdn1.lvn123.site/data/...</code> kèm header <code>Access-Control-Allow-Origin: *</code>, <code>Cross-Origin-Resource-Policy: cross-origin</code> và <code>Cache-Control: public, max-age=2592000, immutable</code>.</p>
-      </div>
     </div>
 
     <div class="card">
-      <h2>3. Mẫu JSON trả về từ <code>GET /api/anime?slug=black-clover-2nd-season-a6073</code></h2>
+      <h2>4. Mẫu JSON trả về của các Endpoint chính</h2>
+
+      <h3>4.1. Trang chủ — <code>GET /api/home</code> (Tách riêng 3 khối <code>latest</code>, <code>upcoming</code>, <code>featured</code>)</h3>
+      <pre>{
+  "success": true,
+  "path": "",
+  "page": 1,
+  "count": 30,
+  "latest": [ /* 10 phim mới cập nhật */ ],
+  "upcoming": [ /* 10 phim sắp chiếu */ ],
+  "featured": [ /* 10 phim đề cử */ ],
+  "items": [ /* 30 phim tổng hợp (giữ tương thích ngược) */ ]
+}</pre>
+
+      <h3>4.2. Lịch chiếu — <code>GET /api/schedule</code> (Giờ chiếu tuyệt đối <code>air_at</code> &amp; đếm ngược thời gian thực)</h3>
+      <pre>{
+  "success": true,
+  "generated_at_unix": 1795396000,
+  "day_count": 7,
+  "schedule": [
+    {
+      "day": "Thứ Tư , Ngày 25 tháng 11",
+      "date": "2026-11-25",
+      "count": 1,
+      "items": [
+        {
+          "title": "Thám Tử Đã Chết 2",
+          "slug": "tantei-wa-mou-shindeiru-2nd-season-a4659",
+          "poster": "https://cdn1.lvn123.site/data/poster/animevsub-0dfhZ0TW1G.jpg",
+          "air_time": "21 giờ 00 phút",
+          "air_date": "2026-11-25",
+          "air_at": "2026-11-25T21:00:00+07:00",
+          "air_at_unix": 1795615200,
+          "countdown_seconds": 219200,
+          "schedule_badge": "2d 12h 53m 20s",
+          "progress": "07/13",
+          "rating": "9.2",
+          "studio": "Kurihara Manabu",
+          "detail_api": "/api/anime?slug=tantei-wa-mou-shindeiru-2nd-season-a4659"
+        }
+      ]
+    }
+  ]
+}</pre>
+
+      <h3>4.3. Gợi ý nhanh — <code>GET /api/suggest?q=black+clover</code></h3>
+      <pre>{
+  "success": true,
+  "query": "black clover",
+  "count": 4,
+  "items": [
+    {
+      "title": "Black Clover 2nd Season",
+      "slug": "black-clover-2nd-season-a6073",
+      "poster": "https://cdn1.lvn123.site/data/poster/animevsub-P0miGCR3CY.jpg",
+      "episode_note": "Black Clover Season 2",
+      "url": "https://animevietsub.bid/phim/black-clover-2nd-season-a6073/",
+      "detail_api": "/api/anime?slug=black-clover-2nd-season-a6073"
+    }
+  ]
+}</pre>
+
+      <h3>4.4. Chi tiết phim &amp; danh sách tập tối ưu — <code>GET /api/anime?slug=black-clover-2nd-season-a6073</code></h3>
       <pre>{
   "success": true,
   "slug": "black-clover-2nd-season-a6073",
@@ -566,7 +661,7 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2>4. Code mẫu tích hợp Frontend (Hls.js — 0 Server Bandwidth)</h2>
+      <h2>5. Code mẫu tích hợp Frontend (Hls.js — 0 Server Bandwidth)</h2>
       <p>Ghép trực tiếp <code>watch_url</code> từ <code>episodes</code> vào <code>/api/playlist.m3u8?url=</code> và truyền vào <code>Hls.js</code> kèm <code>DirectGoogleCdnLoader</code>:</p>
       <pre>&lt;video id="video" controls playsinline style="width:100%;max-width:960px;"&gt;&lt;/video&gt;
 &lt;script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"&gt;&lt;/script&gt;
