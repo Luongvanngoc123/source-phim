@@ -1,0 +1,117 @@
+.page h1 {
+  margin-bottom: var(--s7);
+}
+
+.agenda {
+  border-top: 1px solid var(--line);
+}
+
+.day {
+  border-bottom: 1px solid var(--line);
+  padding-block: var(--s5);
+}
+
+.day h2 {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  margin: 0 0 var(--s3);
+  font-size: 1.25rem;
+}
+
+.today h2 {
+  display: inline-flex;
+  padding: 5px 10px;
+  background: var(--ink);
+  color: var(--room);
+}
+
+.todayTag {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  align-items: center;
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: var(--s4);
+  padding-block: var(--s3);
+}
+
+.timeBlock {
+  align-items: baseline;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.clock {
+  font-size: 2rem;
+  line-height: 1;
+  font-weight: 600;
+}
+
+.staticCountdown,
+.past {
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+}
+
+.titleLink {
+  align-items: center;
+  color: var(--ink);
+  display: flex;
+  gap: var(--s3);
+  text-decoration: none;
+}
+
+.titleLink:hover strong,
+.titleLink:focus-visible strong {
+  text-decoration: underline;
+}
+
+.titleLink > :first-child {
+  width: 56px;
+  flex: 0 0 56px;
+}
+
+.titleLink strong,
+.whatAirs {
+  display: block;
+}
+
+.whatAirs {
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+  margin-top: 2px;
+}
+
+.noItems {
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+@media (max-width: 599px) {
+  .row {
+    display: block;
+  }
+
+  .timeBlock {
+    align-items: baseline;
+    flex-direction: row;
+    gap: var(--s3);
+    margin-bottom: var(--s3);
+  }
+
+  .clock {
+    font-size: 1.75rem;
+  }
+}

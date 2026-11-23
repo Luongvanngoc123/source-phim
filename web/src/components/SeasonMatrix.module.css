@@ -1,0 +1,47 @@
+.scroll {
+  overflow-x: auto;
+}
+
+.scroll table {
+  width: max-content;
+  min-width: 420px;
+  max-width: 520px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.scroll thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.scroll th,
+.scroll td {
+  padding: var(--s1) var(--s3);
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.scroll tbody th {
+  color: var(--ink);
+  font-family: var(--font-figure);
+  font-weight: 600;
+}
+
+.scroll td a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--indigo);
+  text-decoration: none;
+}
+
+.scroll td a:hover,
+.scroll td a:focus-visible {
+  text-decoration: underline;
+}

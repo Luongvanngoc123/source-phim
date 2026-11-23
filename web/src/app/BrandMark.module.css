@@ -1,0 +1,25 @@
+.brand {
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 78px;
+  aspect-ratio: 16 / 9;
+  flex: 0 0 auto;
+  padding: 0 4px 3px;
+  border-radius: var(--radius-poster);
+  background: var(--screen);
+  color: var(--subtitle);
+  text-decoration: none;
+}
+
+.brand span {
+  font: 800 15px/1 var(--font-voice);
+  letter-spacing: -0.04em;
+  -webkit-text-stroke: 0.1em var(--subtitle-edge);
+  paint-order: stroke fill;
+  text-shadow: 0 0.06em 0 var(--subtitle-edge);
+}
+
+.brand:hover {
+  text-decoration: none;
+}

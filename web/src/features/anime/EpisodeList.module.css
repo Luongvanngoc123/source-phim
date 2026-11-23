@@ -1,0 +1,64 @@
+.list {
+  min-width: 0;
+}
+
+.list h2 {
+  font-size: 1.25rem;
+}
+
+.ranges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-top: var(--s3);
+}
+
+.rangeButton {
+  min-height: 44px;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink);
+}
+
+.rangeButton[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--room);
+}
+
+.episodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: var(--s2);
+  max-height: 420px;
+  margin-top: var(--s4);
+  overflow-y: auto;
+  padding: 1px;
+}
+
+.episodes a {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.episodes a:hover {
+  text-decoration: underline;
+}
+
+.episodes .current {
+  background: var(--ink);
+  color: var(--room);
+}
+
+@media (min-width: 900px) {
+  .episodes {
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  }
+}

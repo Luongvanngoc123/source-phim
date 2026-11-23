@@ -1,0 +1,26 @@
+.heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s4);
+  margin-bottom: var(--s5);
+}
+
+.heading h2,
+.heading h3 {
+  margin: 0;
+}
+
+.heading a {
+  flex: 0 0 auto;
+  min-height: 44px;
+  align-content: center;
+}
+
+@media (max-width: 599px) {
+  .heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--s2);
+  }
+}

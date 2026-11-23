@@ -3,12 +3,14 @@ target/
 **/target/
 __pycache__/
 *.pyc
+node_modules/
+web/dist/
 
 # Large local evidence & test media (>100MB / video files)
 rea_evidence.json
 *.ts
 *.mp4
 *.html
-!web-anime-redesign/
-!web-anime-redesign/*.html
+!web/**/*.ts
+!web/**/*.html
 make_sample_clip.py

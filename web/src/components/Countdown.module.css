@@ -1,0 +1,6 @@
+.countdown {
+  white-space: nowrap;
+  font-family: var(--font-figure);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}

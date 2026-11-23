@@ -1,0 +1,6 @@
+.page {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: var(--s4);
+}

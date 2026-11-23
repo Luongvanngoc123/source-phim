@@ -1,0 +1,25 @@
+.home {
+  display: grid;
+  gap: var(--s8);
+  padding-block: var(--s6) var(--s8);
+}
+
+.section {
+  min-width: 0;
+}
+
+.indexSkeleton {
+  height: 84px;
+  background: var(--room-sunken);
+}
+
+.matrixSkeleton {
+  height: 180px;
+  background: var(--room-sunken);
+}
+
+@media (max-width: 600px) {
+  .home {
+    gap: var(--s7);
+  }
+}

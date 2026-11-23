@@ -26,6 +26,8 @@ Bộ công cụ giải mã tĩnh 2 lớp mật mã của player `stream.googleap
 │   └── src/
 │       ├── lib.rs                  # Lõi giải mã 2 lớp In-place (Zero-Regex, u32 index)
 │       └── main.rs                 # HTTP API Server đa luồng kèm bộ nhớ đệm TTL 30 phút & CLI
+├── gateway/                        # Java 21 Spring Boot: phục vụ bản build React, chuyển tiếp /api/** tới Rust engine
+├── web/                            # Giao diện Animora (React + TypeScript + Vite)
 └── sources/                        # Mã nguồn JS client-side đã làm sạch
 ```
 
@@ -99,6 +101,56 @@ Trang nguồn đổi tên miền mỗi khi tên miền đang dùng bị chặn. 
 - `GET /health` trả `upstream_host` và `image_host` đang dùng.
 - Link tập phim cũ (ví dụ `https://animevietsub.bid/phim/<slug>/tap-01-<id>.html`) vẫn dùng được: engine chỉ lấy phần đường dẫn rồi tải trang trên tên miền hiện tại.
 - Khi trang lại đổi tên miền: xem link rút gọn trang tự công bố (`bit.ly/animevietsubtv`) chuyển tới đâu, sửa `AVS_PARENT_HOST` trong `docker-compose.yml`, rồi `docker compose up -d`.
+
+---
+
+## Giao diện web Animora (React + Java gateway)
+
+Giao diện xem phim nằm ở `web/` (React + TypeScript + Vite) và được phục vụ bởi `gateway/` (Java 21, Spring Boot). Mọi dữ liệu đều lấy qua Rust engine tại `https://cdn1.lvn123.site`; không cần chạy engine trên máy phát triển.
+
+| Thành phần | Việc nó làm |
+|---|---|
+| `web/` | SPA: trang chủ, lịch chiếu, danh mục, thể loại, mùa, tìm kiếm, chi tiết phim, trình phát HLS (`hls.js` + `DirectGoogleCdnLoader`) |
+| `gateway/` | Trả file tĩnh của `web/dist` (route của SPA rơi về `index.html`), chuyển tiếp nguyên vẹn `GET /api/**` tới engine, nén gzip, đặt `Cache-Control` |
+| Rust engine | Cào dữ liệu, giải mã `.m3u8`, proxy ảnh `/data/**` (không đổi) |
+
+Trình duyệt chỉ gọi `/api/...` cùng origin. Ảnh poster/banner được tải thẳng từ URL `https://cdn1.lvn123.site/data/...` có sẵn trong JSON; segment video được tải thẳng từ `lh3.googleusercontent.com`.
+
+### Phát triển giao diện
+
+```bash
+cd web
+npm install
+npm run dev        # http://localhost:5173, /api được proxy tới https://cdn1.lvn123.site
+```
+
+- `API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev` để dev server đi qua gateway chạy trên máy.
+- `npm test` (vitest), `npm run lint` (oxlint), `npm run format` (prettier).
+
+### Build và chạy
+
+```bash
+cd web && npm ci && npm run build        # tạo web/dist
+cd ../gateway && ./mvnw package          # Windows: mvnw.cmd package; cần JAVA_HOME trỏ tới JDK 21
+java -jar target/gateway.jar             # http://localhost:8080
+```
+
+| Biến môi trường | Mặc định | Ý nghĩa |
+|---|---|---|
+| `ENGINE_URL` | `https://cdn1.lvn123.site` | Rust engine nhận các request `/api/**` |
+| `WEB_ROOT` | `file:../web/dist/` | Thư mục bản build React, dạng resource location của Spring, kết thúc bằng `/` |
+| `PORT` | `8080` | Cổng gateway |
+
+Cache của gateway: `/assets/**` là `immutable` 1 năm, `index.html` là `no-cache`, JSON `200` là `public, max-age=60`; `/api/playlist.m3u8`, `/api/extract` và mọi phản hồi lỗi là `no-store`.
+
+### Docker
+
+```bash
+docker build -f gateway/Dockerfile -t animora-web .
+docker run -d --name animora-web --restart unless-stopped -p 127.0.0.1:8080:8080 animora-web
+```
+
+Image build `web/` bằng Node, build `gateway/` bằng Maven rồi chạy trên `eclipse-temurin:21-jre`. Đổi engine bằng `-e ENGINE_URL=...`.
 
 ---
 

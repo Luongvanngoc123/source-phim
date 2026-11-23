@@ -1,0 +1,27 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: var(--s5) var(--s4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grid > li {
+  min-width: 0;
+  max-width: 200px;
+}
+
+.skeleton div {
+  aspect-ratio: 283 / 400;
+  border-radius: var(--radius-poster);
+  background: var(--room-sunken);
+}
+
+.skeleton span {
+  display: block;
+  width: 75%;
+  height: 22px;
+  margin-top: var(--s2);
+  background: var(--room-sunken);
+}

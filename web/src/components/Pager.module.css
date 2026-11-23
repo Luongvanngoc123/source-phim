@@ -1,0 +1,28 @@
+.pager {
+  display: flex;
+  align-items: center;
+  gap: var(--s5);
+  margin-top: var(--s7);
+}
+
+.pager a,
+.unavailable {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+}
+
+.unavailable {
+  color: var(--ink-soft);
+}
+
+.pager strong {
+  display: inline-grid;
+  min-width: 44px;
+  min-height: 44px;
+  padding-inline: var(--s3);
+  place-items: center;
+  background: var(--ink);
+  color: var(--room);
+  text-align: center;
+}

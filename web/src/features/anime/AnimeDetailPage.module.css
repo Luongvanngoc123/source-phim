@@ -1,0 +1,180 @@
+.page {
+  display: grid;
+  gap: var(--s6);
+  padding-block: var(--s6) var(--s8);
+}
+
+.header {
+  display: grid;
+  gap: var(--s3);
+}
+
+.header h1 {
+  max-width: 28ch;
+}
+
+.topLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3) var(--s5);
+  color: var(--ink-soft);
+}
+
+.alternative {
+  flex-basis: 100%;
+  font-size: 1.125rem;
+}
+
+.content {
+  display: grid;
+  gap: var(--s7);
+}
+
+.primary,
+.sidebar {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: var(--s6);
+}
+
+.hero {
+  width: 100%;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  align-items: center;
+}
+
+.synopsis {
+  max-width: 68ch;
+  white-space: pre-line;
+}
+
+.facts {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: var(--s4);
+  padding-block: var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+.facts dt {
+  color: var(--ink-soft);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.genres,
+.related {
+  display: grid;
+  gap: var(--s3);
+}
+
+.genres h2,
+.related h2 {
+  font-size: 1.25rem;
+}
+
+.genres > a {
+  justify-self: start;
+  color: var(--indigo);
+  text-decoration: none;
+}
+
+.genres > a:hover,
+.genres > a:focus-visible {
+  text-decoration: underline;
+}
+
+.related ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.related a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  text-decoration: none;
+}
+
+.relatedCurrent {
+  background: var(--ink);
+  color: var(--room);
+}
+
+.skeleton {
+  display: grid;
+  gap: var(--s4);
+}
+
+.skeletonScreen,
+.skeletonHeading,
+.skeletonText,
+.skeletonTextShort,
+.skeletonFacts {
+  background: var(--room-sunken);
+}
+
+.skeletonScreen {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-screen);
+}
+
+.skeletonHeading {
+  width: min(55%, 420px);
+  height: 32px;
+}
+
+.skeletonText {
+  width: min(68ch, 100%);
+  height: 24px;
+}
+
+.skeletonTextShort {
+  width: min(44ch, 80%);
+  height: 24px;
+}
+
+.skeletonFacts {
+  width: min(900px, 100%);
+  height: 230px;
+}
+
+@media (min-width: 1100px) {
+  .content {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    align-items: start;
+  }
+}
+
+@media (max-width: 599px) {
+  .page {
+    gap: var(--s5);
+    padding-block: var(--s5) var(--s7);
+  }
+
+  .facts > div {
+    grid-template-columns: 1fr;
+    gap: var(--s1);
+  }
+}
