@@ -28,6 +28,7 @@ COPY --from=web-builder /build/web/out /app/web
 
 ENV PORT=8095
 ENV WEB_ROOT=/app/web
+ENV DATA_DIR=/data
 EXPOSE 8095
 
 CMD ["/app/avs_direct_m3u8", "--serve"]

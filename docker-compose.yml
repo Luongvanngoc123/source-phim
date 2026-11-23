@@ -9,7 +9,13 @@ services:
     environment:
       - PORT=8095
       - WEB_ROOT=/app/web
+      - DATA_DIR=/data
       - AVS_PARENT_HOST=animevietsub.zone
     ports:
       - "127.0.0.1:8095:8095"
       - "172.18.0.1:8095:8095"
+    volumes:
+      - avs-accounts:/data
+
+volumes:
+  avs-accounts:

@@ -6,6 +6,9 @@ __pycache__/
 node_modules/
 web/.next/
 web/out/
+# Account database of the engine (DATA_DIR)
+data/
+rust_extractor/data/
 
 # Large local evidence & test media (>100MB / video files)
 rea_evidence.json

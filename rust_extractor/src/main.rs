@@ -1,3 +1,9 @@
+mod accounts;
+mod http;
+mod store;
+
+use accounts::AccountState;
+
 use avs_direct_m3u8::{
     build_direct_cdn_m3u8, cdn_host, parent_host,
     scraper::{
@@ -10,7 +16,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -1182,34 +1188,43 @@ fn handle_client(
     banner_cache: BannerCacheMap,
     banner_tx: Sender<Vec<String>>,
     web_root: Option<PathBuf>,
+    account_state: AccountState,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    let peer_addr = match stream.peer_addr() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
     });
-
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() || request_line.is_empty() {
-        return;
-    }
-
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        return;
-    }
-    let method = parts[0];
-    let full_path = parts[1];
+    let request = match http::read_request(&mut reader, peer_addr) {
+        Ok(value) => value,
+        Err(error) => {
+            let (status, body) = http::parse_error_body(error);
+            http::send_response(stream, status, "application/json; charset=utf-8", &body, false, None, true, &[]);
+            return;
+        }
+    };
+    let method = request.method.as_str();
+    let path = request.path.as_str();
+    let query = request.query.as_str();
     let head_only = method == "HEAD";
+    let account_stream = match stream.try_clone() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    if accounts::handle_request(account_stream, &request, &account_state, head_only) {
+        return;
+    }
     if method == "OPTIONS" {
         send_response_with_head(stream, "204 No Content", "text/plain", b"", false);
         return;
     }
     // API routes answer other methods as they always have; files are only ever read.
     let may_serve_files = method == "GET" || head_only;
-
-    let (path, query) = full_path.split_once('?').unwrap_or((full_path, ""));
 
     match path {
         "/watch" | "/console" => {
@@ -1268,6 +1283,7 @@ fn handle_client(
                 "cached_pages": m_count,
                 "cached_images": i_count,
                 "web_root": web_root.is_some(),
+                "account_store_open": account_state.store.as_ref().is_some_and(|store| store.is_open()),
                 "endpoints": [
                     "/console",
                     "/hdsd",
@@ -1541,6 +1557,17 @@ fn run_server(bind_addr: &str) {
         )
     });
     let web_root = configured_web_root();
+    let data_dir = env::var_os("DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./data"));
+    let account_store = match store::AccountStore::open(&data_dir) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(error) => {
+            eprintln!("[ERR] Account store unavailable: {error:?}");
+            None
+        }
+    };
+    let account_state = AccountState::new(account_store);
 
     for stream in listener.incoming().flatten() {
         let sc = Arc::clone(&stream_cache);
@@ -1549,8 +1576,9 @@ fn run_server(bind_addr: &str) {
         let bc = Arc::clone(&banner_cache);
         let bt = banner_tx.clone();
         let root = web_root.clone();
+        let accounts = account_state.clone();
         thread::spawn(move || {
-            handle_client(stream, sc, jc, ic, bc, bt, root);
+            handle_client(stream, sc, jc, ic, bc, bt, root, accounts);
         });
     }
 }
