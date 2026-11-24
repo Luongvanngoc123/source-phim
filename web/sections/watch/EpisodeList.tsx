@@ -136,7 +136,11 @@ export default function EpisodeList({
         <>
           <div className="mb-3 text-xs text-gray-500">{rangeLabel(rangeStart, rangeEnd)}</div>
           {collapsed ? (
-            <div className="mb-12 grid w-full grid-cols-4 gap-4 lg:grid-cols-6">
+            // A phone fits four short labels to a row; three-digit episode numbers and longer
+            // names need the wider cell of three, or the label is cut off.
+            <div
+              className={`mb-12 grid w-full gap-3 sm:grid-cols-4 sm:gap-4 lg:grid-cols-6 ${visibleEpisodes.some((episode) => episode.name.length > 6) ? "grid-cols-3" : "grid-cols-4"}`}
+            >
               {visibleEpisodes.map((episode) => {
                 const active = episode._id === currentEpisodeId;
                 return (
@@ -146,7 +150,11 @@ export default function EpisodeList({
                     href={paths.watch(slug, episode.slug)}
                     className={`flex items-center justify-center gap-2 rounded-md px-1 py-2.5 hover:text-primary md:py-3 lg:py-4 ${active ? "bg-primary/10 text-primary" : "bg-[#1c2343] text-white"}`}
                   >
-                    {active ? <Play /> : <i className="fa-solid fa-play text-xs" />}
+                    {active ? (
+                      <Play className="flex-none" />
+                    ) : (
+                      <i className="fa-solid fa-play text-xs" />
+                    )}
                     <span className="truncate">{episode.name}</span>
                   </Link>
                 );
