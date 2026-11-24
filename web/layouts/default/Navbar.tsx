@@ -1,7 +1,8 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import Wordmark from "@/components/Wordmark";
 import AccountButton from "@/components/Account/AccountButton";
 import SearchBox from "@/components/search/SearchBox";
@@ -22,9 +23,76 @@ interface NavbarProps {
   setIsSidebarOpen: (value: boolean) => void;
 }
 
+type MenuId = "anime" | "category" | "country";
+
 const menuClass = "text-white hover:text-primary text-[13px] whitespace-nowrap";
+// The strip drawn before the panel covers the gap under the label, so the pointer stays inside
+// the menu on its way down.
 const dropdownClass =
-  "absolute right-0 top-[35px] z-[60] hidden max-w-[calc(100vw-2rem)] rounded-lg bg-[#20284bfa] p-2 text-base shadow-[2px_1px_12px_0px_#00000030] before:absolute before:inset-x-0 before:-top-5 before:h-5 before:content-[''] group-hover:block group-focus-within:block";
+  "absolute right-0 top-[35px] z-[60] max-w-[calc(100vw-2rem)] rounded-lg bg-[#20284bfa] p-2 text-base shadow-[2px_1px_12px_0px_#00000030] before:absolute before:inset-x-0 before:-top-5 before:h-5 before:content-['']";
+
+interface NavDropdownProps {
+  label: string;
+  isOpen: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  panelClassName: string;
+  children: ReactNode;
+}
+
+/**
+ * A header menu that opens on hover, click or keyboard and closes itself once an entry is
+ * picked. Open state lives in React rather than in `:hover`: pages change without a reload,
+ * so after a pick the pointer is still over the panel and hover alone would keep it open.
+ */
+function NavDropdown({
+  label,
+  isOpen,
+  onOpen,
+  onClose,
+  panelClassName,
+  children,
+}: NavDropdownProps) {
+  return (
+    <li
+      className="relative"
+      onMouseEnter={onOpen}
+      onMouseLeave={onClose}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") onClose();
+      }}
+      onBlur={(event) => {
+        // Only focus moving to another control closes the menu. A blur with no new target
+        // also happens while a link inside is being clicked, and hiding the panel then
+        // would swallow that click.
+        if (
+          event.relatedTarget instanceof Node &&
+          !event.currentTarget.contains(event.relatedTarget)
+        ) {
+          onClose();
+        }
+      }}
+    >
+      <button
+        type="button"
+        aria-haspopup="true"
+        aria-expanded={isOpen}
+        onClick={onOpen}
+        className={`${menuClass} flex items-center gap-1`}
+      >
+        {label} <i className="fa-solid fa-caret-down"></i>
+      </button>
+      <div
+        className={clsx(dropdownClass, panelClassName, isOpen ? "block" : "hidden")}
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest("a")) onClose();
+        }}
+      >
+        {children}
+      </div>
+    </li>
+  );
+}
 
 const Navbar: React.FC<NavbarProps> = ({
   isScrolled,
@@ -37,6 +105,19 @@ const Navbar: React.FC<NavbarProps> = ({
   const router = useRouter();
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [isAnimated, setIsAnimated] = useState(false);
+  const [openMenu, setOpenMenu] = useState<MenuId | null>(null);
+  const menuRef = useRef<HTMLUListElement>(null);
+  const closeMenu = () => setOpenMenu(null);
+
+  useEffect(() => {
+    if (openMenu === null) return undefined;
+    // A touch screen sends no pointer-leave, so there a tap elsewhere closes the open menu.
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpenMenu(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [openMenu]);
 
   useEffect(() => {
     if (isMobileSearchOpen) {
@@ -107,7 +188,7 @@ const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         <div className="flex min-w-0 flex-1 items-center justify-end gap-4 xl:gap-5">
-          <ul className="hidden min-w-0 items-center gap-4 xl:flex">
+          <ul ref={menuRef} className="hidden min-w-0 items-center gap-4 xl:flex">
             <li>
               <Link href={paths.home} className={menuClass}>
                 Trang chủ
@@ -133,108 +214,111 @@ const Navbar: React.FC<NavbarProps> = ({
                 TV Shows
               </Link>
             </li>
-            <li className="group relative">
-              <button type="button" className={`${menuClass} flex items-center gap-1`}>
-                Anime <i className="fa-solid fa-caret-down"></i>
-              </button>
-              <div className={`${dropdownClass} min-w-[210px]`}>
-                <ul className="grid grid-cols-2 gap-1 text-[13px]">
-                  <li>
-                    <Link
-                      href={paths.animeSeries}
-                      className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
-                    >
-                      Anime bộ
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href={paths.animeMovies}
-                      className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
-                    >
-                      Anime lẻ
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href={paths.upcoming}
-                      className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
-                    >
-                      Sắp chiếu
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href={paths.schedule}
-                      className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
-                    >
-                      Lịch chiếu
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href={paths.topics}
-                      className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
-                    >
-                      Chủ đề
-                    </Link>
-                  </li>
-                </ul>
-                <div className="mt-2 border-t border-white/10 pt-2">
-                  <div className="px-3 pb-1 text-xs text-gray-400">Mùa</div>
-                  <ul className="grid max-h-[16rem] grid-cols-2 gap-1 overflow-y-auto">
-                    {seasons.map((season) => (
-                      <li key={season.slug}>
-                        <Link
-                          href={paths.season(season.slug)}
-                          className="block rounded px-3 py-1.5 text-[13px] text-gray-300 hover:bg-white/10 hover:text-white"
-                        >
-                          {season.name}
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </li>
-            <li className="group relative">
-              <button type="button" className={`${menuClass} flex items-center gap-1`}>
-                Thể loại <i className="fa-solid fa-caret-down"></i>
-              </button>
-              <div className={`${dropdownClass} min-w-[380px]`}>
-                <ul className="grid max-h-[24rem] grid-cols-3 gap-1 overflow-y-auto">
-                  {categories.map((category) => (
-                    <li key={category.slug}>
+            <NavDropdown
+              label="Anime"
+              isOpen={openMenu === "anime"}
+              onOpen={() => setOpenMenu("anime")}
+              onClose={closeMenu}
+              panelClassName="min-w-[210px]"
+            >
+              <ul className="grid grid-cols-2 gap-1 text-[13px]">
+                <li>
+                  <Link
+                    href={paths.animeSeries}
+                    className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
+                  >
+                    Anime bộ
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    href={paths.animeMovies}
+                    className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
+                  >
+                    Anime lẻ
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    href={paths.upcoming}
+                    className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
+                  >
+                    Sắp chiếu
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    href={paths.schedule}
+                    className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
+                  >
+                    Lịch chiếu
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    href={paths.topics}
+                    className="block rounded px-3 py-1.5 text-white hover:bg-white/10 hover:text-primary"
+                  >
+                    Chủ đề
+                  </Link>
+                </li>
+              </ul>
+              <div className="mt-2 border-t border-white/10 pt-2">
+                <div className="px-3 pb-1 text-xs text-gray-400">Mùa</div>
+                <ul className="grid max-h-[16rem] grid-cols-2 gap-1 overflow-y-auto">
+                  {seasons.map((season) => (
+                    <li key={season.slug}>
                       <Link
-                        href={paths.category(category.slug)}
-                        className="block rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10 hover:text-primary"
-                      >
-                        {category.name}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </li>
-            <li className="group relative">
-              <button type="button" className={`${menuClass} flex items-center gap-1`}>
-                Quốc gia <i className="fa-solid fa-caret-down"></i>
-              </button>
-              <div className={`${dropdownClass} min-w-[190px]`}>
-                <ul className="grid max-h-[24rem] grid-cols-1 gap-1 overflow-y-auto">
-                  {countries.map((country) => (
-                    <li key={country.slug}>
-                      <Link
-                        href={paths.country(country.slug)}
+                        href={paths.season(season.slug)}
                         className="block rounded px-3 py-1.5 text-[13px] text-gray-300 hover:bg-white/10 hover:text-white"
                       >
-                        {country.name}
+                        {season.name}
                       </Link>
                     </li>
                   ))}
                 </ul>
               </div>
-            </li>
+            </NavDropdown>
+            <NavDropdown
+              label="Thể loại"
+              isOpen={openMenu === "category"}
+              onOpen={() => setOpenMenu("category")}
+              onClose={closeMenu}
+              panelClassName="min-w-[380px]"
+            >
+              <ul className="grid max-h-[24rem] grid-cols-3 gap-1 overflow-y-auto">
+                {categories.map((category) => (
+                  <li key={category.slug}>
+                    <Link
+                      href={paths.category(category.slug)}
+                      className="block rounded px-3 py-1.5 text-[13px] text-white hover:bg-white/10 hover:text-primary"
+                    >
+                      {category.name}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </NavDropdown>
+            <NavDropdown
+              label="Quốc gia"
+              isOpen={openMenu === "country"}
+              onOpen={() => setOpenMenu("country")}
+              onClose={closeMenu}
+              panelClassName="min-w-[190px]"
+            >
+              <ul className="grid max-h-[24rem] grid-cols-1 gap-1 overflow-y-auto">
+                {countries.map((country) => (
+                  <li key={country.slug}>
+                    <Link
+                      href={paths.country(country.slug)}
+                      className="block rounded px-3 py-1.5 text-[13px] text-gray-300 hover:bg-white/10 hover:text-white"
+                    >
+                      {country.name}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </NavDropdown>
           </ul>
           <button
             type="button"
@@ -255,7 +339,7 @@ const Navbar: React.FC<NavbarProps> = ({
             isMobileSearchOpen ? "flex" : "hidden",
           )}
         >
-          <SearchBox className="w-full" />
+          <SearchBox className="w-full" onNavigate={handleCloseMobileSearch} />
         </div>
         <div className={clsx("xl:hidden", isMobileSearchOpen ? "absolute right-5" : "hidden")}>
           <button
