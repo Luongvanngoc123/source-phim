@@ -9,9 +9,38 @@ use serde_json::Value;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod abyss;
 pub mod scraper;
+
+static DU_DOWN_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+fn unix_seconds() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+pub fn du_down_for() -> u64 {
+    DU_DOWN_UNTIL.load(Ordering::Relaxed).saturating_sub(unix_seconds())
+}
+
+/// A DU answer that says the server itself is unreachable rather than the episode missing.
+///
+/// Its host answers a request without a browser's fingerprint with a Cloudflare challenge, so
+/// a 403 means the same thing here as a timeout: nothing this engine sends will be served.
+fn du_request_error(step: &str, error: ureq::Error) -> String {
+    let unreachable = matches!(
+        error,
+        ureq::Error::Transport(_) | ureq::Error::Status(500.., _) | ureq::Error::Status(403 | 429, _)
+    );
+    if unreachable {
+        format!("UPSTREAM_DOWN: Không thể kết nối với DU ({step}): {error}")
+    } else {
+        format!("Yêu cầu tới DU thất bại ({step}): {error}")
+    }
+}
 
 type HmacSha256 = Hmac<Sha256>;
 type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
@@ -168,7 +197,8 @@ pub fn unshuffle_ciphertext(mut bytes: Vec<u8>, sk: &str) -> Result<String, Stri
         return String::from_utf8(bytes).map_err(|e| e.to_string());
     }
     let prefix_len = sk.len().min(8);
-    let mut seed = js_parse_int_16(&sk[..prefix_len]);
+    let prefix = sk.get(..prefix_len).ok_or("Tiền tố khóa DU không hợp lệ")?;
+    let mut seed = js_parse_int_16(prefix);
 
     // Store only the swap target index j for i = (n-1) down to 1 (u32 saves 50% RAM on 64-bit)
     let mut targets = Vec::with_capacity(n - 1);
@@ -314,7 +344,8 @@ fn extract_query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn url_encode(s: &str) -> String {
+/// Percent-encode a value for a URL query or an `x-www-form-urlencoded` body.
+pub fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
@@ -328,10 +359,10 @@ fn url_encode(s: &str) -> String {
 
 /// A watch page of the upstream site: where to fetch it and what it must contain.
 #[derive(Debug, PartialEq, Eq)]
-struct WatchPage {
-    url: String,
-    slug: String,
-    episode_id: Option<String>,
+pub(crate) struct WatchPage {
+    pub(crate) url: String,
+    pub(crate) slug: String,
+    pub(crate) episode_id: Option<String>,
 }
 
 /// One path segment that may be copied into an upstream URL.
@@ -348,7 +379,7 @@ fn is_plain_segment(segment: &str) -> bool {
 ///
 /// Clients keep `watch_url`s around, and those can name a domain the site has since left, so
 /// only the path of the link is used; the page is always fetched from the configured host.
-fn watch_page_on(host: &str, input: &str) -> Result<WatchPage, String> {
+pub(crate) fn watch_page_on(host: &str, input: &str) -> Result<WatchPage, String> {
     let Some(phim_idx) = input.find("/phim/") else {
         return Err(format!("BAD_REQUEST: Unsupported URL or player ID: {input}"));
     };
@@ -392,7 +423,7 @@ pub fn resolve_player_url(input: &str) -> Result<String, String> {
     if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(format!("https://stream.googleapiscdn.com/player/{trimmed}"));
     }
-    if trimmed.contains("stream.googleapiscdn.com/player/") {
+    if trimmed.starts_with("https://stream.googleapiscdn.com/player/") {
         return Ok(trimmed.to_string());
     }
 
@@ -424,16 +455,30 @@ pub fn resolve_player_url(input: &str) -> Result<String, String> {
         return Ok(raw_url.to_string());
     }
 
-    Err("NOT_FOUND: Không tìm thấy nguồn phát (stream.googleapiscdn.com/player) cho tập phim này".into())
+    Err("NO_SOURCE: Không tìm thấy nguồn phát DU cho tập phim này".into())
 }
 
 /// Full end-to-end extraction from `https://stream.googleapiscdn.com/player/<id>`
 /// (or a 64-hex player ID / watch URL) to a self-contained `.m3u8` pointing directly to `lh3.googleusercontent.com`.
 pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<DirectM3u8Result, String> {
+    let result = extract_du(player_input, inline_key);
+    match &result {
+        Ok(_) => DU_DOWN_UNTIL.store(0, Ordering::Relaxed),
+        Err(error) if error.starts_with("UPSTREAM_DOWN:") => {
+            DU_DOWN_UNTIL.store(unix_seconds().saturating_add(300), Ordering::Relaxed);
+        }
+        _ => {}
+    }
+    result
+}
+
+fn extract_du(player_input: &str, inline_key: bool) -> Result<DirectM3u8Result, String> {
     let resolved_url = resolve_player_url(player_input)?;
     let player_url = resolved_url.as_str();
     let agent = ureq::AgentBuilder::new()
         .user_agent(DEFAULT_UA)
+        .timeout_connect(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .build();
 
     // 1. Fetch Player HTML
@@ -444,18 +489,20 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
     {
         Ok(resp) => resp
             .into_string()
-            .map_err(|e| format!("Read player HTML failed: {e}"))?,
+            .map_err(|e| format!("UPSTREAM_DOWN: Không đọc được trang phát DU: {e}"))?,
         Err(ureq::Error::Status(404, _)) => {
-            return Err(format!("NOT_FOUND: Player URL không tồn tại ({player_url})"));
+            return Err(format!("NO_SOURCE: Player URL không tồn tại ({player_url})"));
         }
-        Err(e) => return Err(format!("GET player failed: {e}")),
+        Err(e) => return Err(du_request_error("player", e)),
     };
 
     let player_id = extract_between(&html, "const id = \"", "\";")
-        .ok_or_else(|| "NOT_FOUND: Player ID không tồn tại hoặc đã bị xóa".to_string())?
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "NO_SOURCE: Player ID không tồn tại hoặc đã bị xóa".to_string())?
         .to_string();
     let avs_token = extract_between(&html, "const avsToken = \"", "\";")
-        .ok_or_else(|| "NOT_FOUND: Không tìm thấy avsToken cho Player ID này".to_string())?
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| "NO_SOURCE: Không tìm thấy avsToken cho Player ID này".to_string())?
         .to_string();
 
     let session_key = extract_session_key(&avs_token)?;
@@ -478,10 +525,10 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
         Ok(resp) => resp,
         Err(ureq::Error::Status(404, _)) => {
             return Err(format!(
-                "NOT_FOUND: Playlist không tồn tại cho player_id '{player_id}'"
+                "NO_SOURCE: Playlist không tồn tại cho player_id '{player_id}'"
             ));
         }
-        Err(e) => return Err(format!("GET playlist failed: {e}")),
+        Err(e) => return Err(du_request_error("playlist", e)),
     };
 
     let env = if let Some(env_h) = pl_resp.header("X-Envelope") {
@@ -497,7 +544,7 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
 
     let carrier_m3u8 = pl_resp
         .into_string()
-        .map_err(|e| format!("Read carrier M3U8 failed: {e}"))?;
+        .map_err(|e| format!("UPSTREAM_DOWN: Không đọc được danh sách phát DU: {e}"))?;
 
     // 3. Decrypt Carrier M3U8 (Layer 1)
     let mut header_lines = Vec::new();
@@ -567,10 +614,10 @@ pub fn build_direct_cdn_m3u8(player_input: &str, inline_key: bool) -> Result<Dir
                     .set("Referer", player_url)
                     .set("Origin", "https://stream.googleapiscdn.com")
                     .call()
-                    .map_err(|e| format!("GET seg-key failed: {e}"))?
+                    .map_err(|e| du_request_error("seg-key", e))?
                     .into_reader()
                     .read_to_end(&mut key_bytes)
-                    .map_err(|e| format!("Read seg-key failed: {e}"))?;
+                    .map_err(|e| format!("UPSTREAM_DOWN: Không đọc được khóa phát DU: {e}"))?;
 
                 let b64_key = B64_STD.encode(&key_bytes);
                 let data_uri = format!("data:application/octet-stream;base64,{b64_key}");
@@ -629,6 +676,20 @@ mod tests {
     use super::*;
 
     const HOST: &str = "animevietsub.zone";
+
+    #[test]
+    fn malformed_key_prefix_returns_an_error() {
+        assert!(unshuffle_ciphertext(vec![0, 1], "1234567é").is_err());
+    }
+
+    #[test]
+    fn a_blocked_or_broken_du_marks_it_down_but_a_missing_page_does_not() {
+        for (status, down) in [(401, false), (404, false), (403, true), (429, true), (500, true), (522, true)] {
+            let response = ureq::Response::new(status, "", "").unwrap();
+            let error = du_request_error("playlist", ureq::Error::Status(status, response));
+            assert_eq!(error.starts_with("UPSTREAM_DOWN:"), down, "status {status}");
+        }
+    }
 
     #[test]
     fn episode_link_from_a_domain_the_site_left_is_rebuilt_on_the_current_host() {

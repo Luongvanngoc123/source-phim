@@ -5,12 +5,13 @@ mod store;
 use accounts::AccountState;
 
 use avs_direct_m3u8::{
-    build_direct_cdn_m3u8, cdn_host, parent_host,
+    abyss::hdx_sources,
+    build_direct_cdn_m3u8, cdn_host, du_down_for, parent_host,
     scraper::{
         fetch_anime_detail, fetch_catalog_list, fetch_genres_and_seasons, fetch_home_page,
         fetch_schedule, refresh_cached_schedule_countdowns, search_anime, suggest_anime,
     },
-    DirectM3u8Result, DEFAULT_UA,
+    url_encode, DirectM3u8Result, DEFAULT_UA,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -342,6 +343,9 @@ fn get_or_extract(
             }
         }
     }
+    if du_down_for() > 0 {
+        return Err("UNAVAILABLE: Máy chủ DU tạm thời không khả dụng".into());
+    }
     let res = build_direct_cdn_m3u8(target, true)?;
     {
         let mut guard = cache.lock().unwrap();
@@ -350,6 +354,35 @@ fn get_or_extract(
         guard.insert(res.player_id.clone(), (Instant::now(), res.clone()));
     }
     Ok((false, res))
+}
+
+/// What the browser should play for one episode link.
+///
+/// DU is the first choice: its playlist keeps the player's own ad handling and the exact
+/// resume. When DU cannot be reached the episode's second server is asked instead, and its
+/// answer is kept for as long as any other page, because its links expire slowly.
+fn resolve_stream(
+    target: &str,
+    stream_cache: &StreamCacheMap,
+    json_cache: &JsonCacheMap,
+) -> Result<Value, String> {
+    match get_or_extract(target, stream_cache) {
+        Ok(_) => {
+            return Ok(json!({
+                "success": true,
+                "type": "hls",
+                "server": "DU",
+                "url": format!("/api/playlist.m3u8?url={}", url_encode(target)),
+            }))
+        }
+        Err(err) if err.starts_with("BAD_REQUEST:") || err.starts_with("NOT_FOUND:") => {
+            return Err(err)
+        }
+        Err(_) => {}
+    }
+    let body = get_or_fetch_json(&format!("hdx:{target}"), json_cache, || hdx_sources(target))?;
+    serde_json::from_str(&body)
+        .map_err(|e| format!("UNAVAILABLE: Không đọc được nguồn phát dự phòng: {e}"))
 }
 
 fn get_or_fetch_json<F>(key: &str, cache: &JsonCacheMap, fetcher: F) -> Result<String, String>
@@ -737,10 +770,14 @@ fn handle_image_proxy(
 }
 
 fn map_error_status_and_message(err: &str) -> (&'static str, &str) {
-    if let Some(msg) = err.strip_prefix("NOT_FOUND:") {
+    if let Some(msg) = err.strip_prefix("NOT_FOUND:").or_else(|| err.strip_prefix("NO_SOURCE:")) {
         ("404 Not Found", msg.trim())
     } else if let Some(msg) = err.strip_prefix("BAD_REQUEST:") {
         ("400 Bad Request", msg.trim())
+    } else if let Some(msg) = err.strip_prefix("UPSTREAM_DOWN:") {
+        ("502 Bad Gateway", msg.trim())
+    } else if let Some(msg) = err.strip_prefix("UNAVAILABLE:") {
+        ("503 Service Unavailable", msg.trim())
     } else {
         ("502 Bad Gateway", err)
     }
@@ -798,6 +835,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
       <div>• <b><a href="/api/anime?slug=black-clover-2nd-season-a6073">GET /api/anime?slug=black-clover-2nd-season-a6073</a></b> — Chi tiết phim, Season &amp; danh sách Tập gọn nhẹ (trả 404 nếu sai slug)</div>
       <div>• <b><a href="/data/poster/animevsub-P0miGCR3CY.jpg">GET /data/poster/&lt;file&gt;.jpg</a></b> &amp; <b><a href="/api/image?url=https://cdn.animevietsub.bid/data/poster/animevsub-P0miGCR3CY.jpg">GET /api/image?url=&lt;url&gt;</a></b> — Proxy ảnh Poster/Banner vượt Cloudflare Challenge &amp; lỗi <code>NotSameOrigin</code></div>
       <div>• <b><a href="/api/playlist.m3u8?url=https://animevietsub.bid/phim/black-clover-2nd-season-a6073/tap-01-115975.html">GET /api/playlist.m3u8?url=&lt;watch_or_player_url&gt;</a></b> — Xuất trực tiếp file .m3u8 chuẩn (trả 404 nếu link tập không tồn tại)</div>
+      <div>• <b><a href="/api/stream?url=https://animevietsub.zone/phim/black-clover-2nd-season-a6073/tap-01-115975.html">GET /api/stream?url=&lt;watch_url&gt;</a></b> — Chọn nguồn phát cho tập: DU (HLS) hoặc máy chủ dự phòng HDX (MP4 nhiều độ phân giải)</div>
     </div>
   </div>
   <script>
@@ -1020,6 +1058,16 @@ const HDSD_HTML: &str = r#"<!DOCTYPE html>
         <p style="margin:6px 0 0;font-size:13.5px;">Nhận trực tiếp link tập phim (<code>watch_url</code> từ <code>/api/anime</code>), link <code>stream.googleapiscdn.com/player/&lt;id&gt;</code> hoặc mã hash 64 ký tự và trả về file <code>#EXTM3U</code> chuẩn chứa khóa AES-128 inline cùng các segment <code>https://lh3.googleusercontent.com/...=d</code>.<br/>
         • Nếu thiếu tham số <code>url</code>/<code>id</code>: trả HTTP <code>400 Bad Request</code>.<br/>
         • Nếu link tập không tồn tại hoặc <code>episode_id</code> không thuộc về bộ phim đó: trả HTTP <code>404 Not Found</code> (<code>{"success": false, "error": "..."}</code>).</p>
+      </div>
+
+      <div class="endpoint-box">
+        <a class="try-link" href="/api/stream?url=https://animevietsub.zone/phim/black-clover-2nd-season-a6073/tap-01-115975.html" target="_blank">Mở thử ↗</a>
+        <span class="method">GET</span>
+        <span class="url">https://cdn1.lvn123.site/api/stream?url=&lt;watch_url&gt;</span>
+        <p style="margin:6px 0 0;font-size:13.5px;">Chọn nguồn phát cho một tập. Thử máy chủ DU trước; DU không phản hồi thì lấy máy chủ dự phòng HDX của chính tập đó.<br/>
+        • DU: <code>{"type":"hls","server":"DU","url":"/api/playlist.m3u8?url=..."}</code>.<br/>
+        • HDX: <code>{"type":"mp4","server":"HDX(ADS)","sources":[{"label":"1080p","height":1080,"size":...,"part_size":...,"url":"https://...","key":"&lt;32 hex&gt;","encrypted_head":65536}]}</code> — file tải thẳng từ máy chủ lưu trữ, phần nằm sau <code>part_size</code> nằm ở URL có thêm số thứ tự phần, <code>encrypted_head</code> byte đầu của phần 0 được xáo bằng AES-256-CTR với khóa <code>key</code>.<br/>
+        • Thiếu <code>url</code>: <code>400</code>. Phim/tập không tồn tại: <code>404</code>. Không nguồn nào mở được: <code>503</code>.</p>
       </div>
 
       <div class="endpoint-box">
@@ -1279,6 +1327,7 @@ fn handle_client(
                 "docs_url": "https://cdn1.lvn123.site/hdsd",
                 "upstream_host": parent_host(),
                 "image_host": cdn_host(),
+                "du_down_for_seconds": du_down_for(),
                 "cached_streams": s_count,
                 "cached_pages": m_count,
                 "cached_images": i_count,
@@ -1299,6 +1348,7 @@ fn handle_client(
                     "/api/anime?slug=black-clover-2nd-season-a6073",
                     "/data/poster/<file>.jpg",
                     "/api/image?url=<image_url>",
+                    "/api/stream?url=<watch_url>",
                     "/api/playlist.m3u8?url=<watch_or_player_url>",
                     "/api/extract?url=<watch_or_player_url>"
                 ]
@@ -1439,6 +1489,31 @@ fn handle_client(
                 Err(err) => {
                     send_json_result_with_head(stream, Err(err), head_only);
                 }
+            }
+        }
+        "/api/stream" | "/stream" => {
+            let target = parse_query_param(query, "url")
+                .or_else(|| parse_query_param(query, "id"))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let Some(target) = target else {
+                send_json_result_with_head(
+                    stream,
+                    Err("BAD_REQUEST: Missing required query parameter: url or id".into()),
+                    head_only,
+                );
+                return;
+            };
+            let body = resolve_stream(&target, &stream_cache, &json_cache);
+            match body {
+                Ok(value) => send_response_with_head(
+                    stream,
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    value.to_string().as_bytes(),
+                    head_only,
+                ),
+                Err(err) => send_json_result_with_head(stream, Err(err), head_only),
             }
         }
         "/api/extract" | "/extract" => {
@@ -1636,6 +1711,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_errors_preserve_their_status_without_internal_prefixes() {
+        for (prefix, status) in [
+            ("BAD_REQUEST", "400 Bad Request"),
+            ("NOT_FOUND", "404 Not Found"),
+            ("NO_SOURCE", "404 Not Found"),
+            ("UPSTREAM_DOWN", "502 Bad Gateway"),
+            ("UNAVAILABLE", "503 Service Unavailable"),
+        ] {
+            assert_eq!(map_error_status_and_message(&format!("{prefix}: lỗi")), (status, "lỗi"));
+        }
+    }
 
     fn test_root() -> PathBuf {
         let root = env::temp_dir().join(format!(
