@@ -1,6 +1,7 @@
 import type { FilmRef } from "@/lib/account";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
+import clsx from "clsx";
 import { toast } from "react-hot-toast";
 import { useAuth } from "@/context/AuthContext";
 import { accountErrorMessage, getFavorites, removeFavorite, saveFavorite } from "@/lib/account";
@@ -62,11 +63,28 @@ export default function SaveButton({ film, className }: SaveButtonProps): ReactE
       disabled={pending}
       aria-pressed={saved}
       aria-label={saved ? "Bỏ lưu phim" : "Lưu phim"}
-      className={className}
+      title={saved ? "Đã lưu. Bấm để bỏ lưu" : "Lưu phim"}
+      className={clsx(
+        "relative inline-flex items-center gap-2 rounded-full border px-5 py-3 transition-colors",
+        // The two states differ in icon, colour, label and badge, so the state reads at a
+        // glance and does not depend on colour alone.
+        saved
+          ? "border-primary bg-primary/15 text-primary hover:bg-primary/25"
+          : "border-white/20 text-white hover:border-primary hover:text-primary",
+        className,
+      )}
       onClick={() => void toggle()}
     >
-      <i className={saved ? "fa-solid fa-bookmark" : "fa-regular fa-bookmark"} />
-      <span className="sr-only">{saved ? "Bỏ lưu" : "Lưu phim"}</span>
+      <i className={saved ? "fa-solid fa-bookmark" : "fa-regular fa-bookmark"} aria-hidden="true" />
+      <span className="text-sm font-medium">{saved ? "Đã lưu" : "Lưu phim"}</span>
+      {saved && (
+        <span
+          className="absolute -right-1 -top-1 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-primary text-[10px] text-black ring-2 ring-[#191b24]"
+          aria-hidden="true"
+        >
+          <i className="fa-solid fa-check" />
+        </span>
+      )}
     </button>
   );
 }

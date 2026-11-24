@@ -194,10 +194,7 @@ function FilmPage() {
                     <span className="text-base lg:text-lg">Xem ngay</span>
                   </Link>
                 )}
-                <SaveButton
-                  film={toFilmRef(movie)}
-                  className="rounded-full border border-white/20 px-5 py-3 text-white transition-colors hover:border-primary hover:text-primary"
-                />
+                <SaveButton film={toFilmRef(movie)} />
                 {!firstEpisode && text(film.schedule) && (
                   <p className="text-gray-300">{film.schedule}</p>
                 )}
