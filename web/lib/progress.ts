@@ -117,6 +117,27 @@ function writeLive(owner: string, entry: ProgressEntry): void {
   }
 }
 
+/**
+ * Forget one film in this browser: its entries in the visitor store and, when it is the
+ * film watched last, the exact position kept for a reload. Removing a film from the history
+ * calls this, or opening the film again would still resume where it was left.
+ */
+export function removeLocalProgress(filmId: string): void {
+  if (typeof window === "undefined") return;
+  const store = readStore();
+  if (filmId in store) {
+    delete store[filmId];
+    writeStore(store);
+  }
+  if (readLive()?.entry.film.id === filmId) {
+    try {
+      window.localStorage.removeItem(LIVE_STORAGE_KEY);
+    } catch {
+      // Storage can be disabled; there is then nothing kept to forget.
+    }
+  }
+}
+
 function resumePosition(entry: ProgressEntry | undefined): number | undefined {
   if (!entry || entry.position < 1) return undefined;
   if (entry.duration > 0 && entry.duration - entry.position < 5) return undefined;

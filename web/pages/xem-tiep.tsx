@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useAuth } from "@/context/AuthContext";
 import { accountErrorMessage, getProgress, removeProgress } from "@/lib/account";
 import type { ProgressEntry } from "@/lib/account";
-import { getLocalProgress, latestFilmProgress } from "@/lib/progress";
+import { getLocalProgress, latestFilmProgress, removeLocalProgress } from "@/lib/progress";
 import { paths } from "@/lib/paths";
 
 export default function ContinuePage(): ReactElement {
@@ -43,26 +43,14 @@ export default function ContinuePage(): ReactElement {
         <p className="text-gray-300">Đang tải...</p>
       </PageShell>
     );
-  if (!user) {
-    return (
-      <PageShell>
-        <p className="text-gray-300">Đăng nhập để xem lại những bộ phim bạn đang xem.</p>
-        <button
-          type="button"
-          onClick={() => openAuth("login")}
-          className="bg-primary text-black px-5 py-3 rounded-lg text-sm font-semibold mt-5"
-        >
-          Đăng nhập
-        </button>
-      </PageShell>
-    );
-  }
 
   const remove = async (id: string) => {
     const previous = entries;
     setEntries((current) => current.filter((entry) => entry.film.id !== id));
     try {
-      await removeProgress(id);
+      // An account's history is on the server as well; a visitor's exists only here.
+      if (user) await removeProgress(id);
+      removeLocalProgress(id);
     } catch (reason: unknown) {
       setEntries(previous);
       setError(accountErrorMessage(reason));
@@ -72,6 +60,19 @@ export default function ContinuePage(): ReactElement {
   return (
     <PageShell>
       <h1 className="text-white text-2xl font-semibold">Xem tiếp</h1>
+      {!user && (
+        <p className="text-gray-400 text-sm mt-3">
+          Danh sách này chỉ lưu trên trình duyệt này.{" "}
+          <button
+            type="button"
+            onClick={() => openAuth("login")}
+            className="text-primary underline"
+          >
+            Đăng nhập
+          </button>{" "}
+          để giữ nó trên mọi thiết bị.
+        </p>
+      )}
       {busy && <p className="text-gray-300 mt-8">Đang tải...</p>}
       {error && (
         <div className="mt-8 text-red-400">
