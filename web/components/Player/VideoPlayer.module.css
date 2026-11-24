@@ -181,6 +181,68 @@
   font-size: 12px;
 }
 
+/* Frame and time under the pointer on the progress bar. The element is created by
+   seekPreview.ts and sits inside the bar, so `left` is measured along it. */
+.player :global(.avs-seek-preview) {
+  position: absolute;
+  bottom: calc(100% + 14px);
+  left: 0;
+  z-index: 40;
+  /* Its own content decides the width: near the right end of the bar the space left over
+     would otherwise squeeze it. */
+  width: max-content;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.player :global(.avs-seek-preview-show) {
+  display: flex;
+}
+
+.player :global(.avs-seek-preview video) {
+  flex: none;
+  width: 176px;
+  aspect-ratio: 16 / 9;
+  border: 2px solid #fff;
+  border-radius: 6px;
+  background: #000;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 55%);
+  object-fit: cover;
+  transition: opacity 120ms ease;
+}
+
+/* The frame on screen belongs to the previous position until the new one arrives. */
+.player :global(.avs-seek-preview-loading video) {
+  opacity: 0.45;
+}
+
+.player :global(.avs-seek-preview-time-only video) {
+  display: none;
+}
+
+.player :global(.avs-seek-preview span) {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 78%);
+  color: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The preview carries the time, so the library's own time tip would say it twice. */
+.player :global(.art-video-player .art-bottom .art-progress .art-progress-tip) {
+  display: none;
+}
+
+/* On a small player the preview reaches the centre play button. */
+.player :global(.art-video-player.avs-seek-previewing .art-mask) {
+  visibility: hidden;
+}
+
 .spinner,
 .player :global(.avs-player-spinner) {
   display: block;
@@ -221,6 +283,10 @@
 
   .player :global(.avs-player-next span) {
     display: none;
+  }
+
+  .player :global(.avs-seek-preview video) {
+    width: 132px;
   }
 
   /*

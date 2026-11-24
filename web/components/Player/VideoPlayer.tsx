@@ -11,6 +11,7 @@ import type {
   PlaylistLoaderConstructor,
 } from "hls.js";
 import { stripAdBreaks } from "../../lib/adfilter";
+import { attachSeekPreview } from "./seekPreview";
 import styles from "./VideoPlayer.module.css";
 
 type HlsConstructor = typeof Hls;
@@ -210,6 +211,8 @@ export default function VideoPlayer({
     let art: Artplayer | null = null;
     let videoElement: HTMLVideoElement | null = null;
     let hls: InstanceType<HlsConstructor> | null = null;
+    let loadedHlsClass: HlsConstructor | null = null;
+    let detachSeekPreview: (() => void) | null = null;
     let lastReportAt = 0;
     let resumeApplied = false;
     // Reporting starts once the position on screen is the viewer's own: after the saved
@@ -395,6 +398,8 @@ export default function VideoPlayer({
           customType: {
             m3u8: async (video, url, currentArt) => {
               try {
+                // Fetched when a stream is opened rather than with the page: it is the
+                // largest part of the player and only this path needs it.
                 const { default: HlsClass } = await import("hls.js");
                 if (cancelled) {
                   return;
@@ -408,6 +413,7 @@ export default function VideoPlayer({
                   setFatalError("fatal");
                   return;
                 }
+                loadedHlsClass = HlsClass;
                 const config: Partial<HlsConfig> = {
                   fLoader: makeFragmentLoader(HlsClass),
                 };
@@ -461,6 +467,18 @@ export default function VideoPlayer({
           },
         };
         art = new Artplayer(options);
+        detachSeekPreview = attachSeekPreview({
+          art,
+          src,
+          hlsClass: () => loadedHlsClass,
+          hlsConfig: (HlsClass) => ({
+            fLoader: makeFragmentLoader(HlsClass),
+            // The same breaks have to be cut, or the preview's clock runs ahead of the film's.
+            ...(kind === "direct"
+              ? { pLoader: makeAdPlaylistLoader(HlsClass, () => undefined) }
+              : {}),
+          }),
+        });
         const video = art.video;
         videoElement = video;
         video.addEventListener("loadedmetadata", applyResume);
@@ -495,6 +513,7 @@ export default function VideoPlayer({
       videoElement?.removeEventListener("ended", onEnded);
       videoElement?.removeEventListener("timeupdate", onTimeUpdate);
       reportProgress(true);
+      detachSeekPreview?.();
       destroyHls();
       art?.destroy(false);
       art = null;

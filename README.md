@@ -150,6 +150,13 @@ Trình phát là [ArtPlayer](https://artplayer.org) (giấy phép MIT) phát HLS
 
   Trình phát báo "Đã bỏ qua m:ss quảng cáo". Kiểm thử: `cd web && node --test lib/adfilter.test.ts` (playlist mẫu thật nằm ở `web/lib/__fixtures__/`). Nếu nguồn đổi cách chèn (ví dụ đặt quảng cáo cùng thư mục với phim) thì đoạn quảng cáo sẽ không bị bỏ; lúc đó cần thêm playlist mẫu mới và sửa luật.
 
+**Xem trước khi tua.** Rê chuột trên thanh tua, kéo thanh tua, hoặc vuốt ngang trên hình (điện thoại) thì hiện khung hình và thời điểm sẽ tua tới (`web/components/Player/seekPreview.ts`). Nguồn phim không có sẵn ảnh xem trước, và tạo ảnh thì phải xử lý video trên máy chủ, nên khung hình là hình thật: một trình phát thứ hai, ẩn, tua tới thời điểm đó và hiện hình của nó. Cái giá:
+
+- mỗi lần con trỏ dừng lại (140 ms) trình duyệt tải đúng 1 segment chứa thời điểm đó: khoảng 1–2 MB với KKPhim, 2–6 MB với anime; lướt qua không dừng thì không tải gì;
+- segment đã tải nằm trong cache của trình duyệt, nên nếu sau đó tua tới đúng chỗ ấy thì trình phát chính không tải lại;
+- không rê lên thanh tua thì trình phát thứ hai không được tạo, không có request nào thêm;
+- trình duyệt bật "tiết kiệm dữ liệu" (`navigator.connection.saveData`) hoặc không chạy được `hls.js` thì chỉ hiện thời điểm, không hiện hình.
+
 ### Tài khoản, phim đã lưu, xem tiếp
 
 Tài khoản do engine quản lý, lưu trong `DATA_DIR/accounts.db` (SQLite, chế độ WAL). Người dùng đăng ký bằng tên đăng nhập và mật khẩu, không cần e-mail; vì vậy không có luồng "quên mật khẩu" (đổi mật khẩu trong `/tai-khoan` khi còn đăng nhập).
