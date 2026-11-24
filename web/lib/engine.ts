@@ -1,6 +1,7 @@
 import type {
   AnimeDetail,
   CatalogResponse,
+  EngineStream,
   GenresResponse,
   HomeResponse,
   ScheduleResponse,
@@ -107,9 +108,19 @@ export function getAnime(slug: string): Promise<AnimeDetail> {
   return get(`/api/anime?slug=${encodeURIComponent(slug)}`);
 }
 
-/** HLS playlist URL for hls.js; `watchUrl` is an episode's `watch_url`. */
-export function playlistUrl(watchUrl: string): string {
-  return `${API_BASE}/api/playlist.m3u8?url=${encodeURIComponent(watchUrl)}`;
+/** Where to ask what to play; `watchUrl` is an episode's `watch_url`. */
+export function streamInfoUrl(watchUrl: string): string {
+  return `${API_BASE}/api/stream?url=${encodeURIComponent(watchUrl)}`;
+}
+
+/**
+ * What to play for one episode.
+ *
+ * The answer is not kept: which server works changes while a viewer watches, so pressing
+ * "Thử lại" has to ask again.
+ */
+export function getStream(streamUrl: string): Promise<EngineStream> {
+  return request<EngineStream>(streamUrl);
 }
 
 /** Vietnamese message for a failed load, chosen by status only. */

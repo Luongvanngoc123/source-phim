@@ -141,9 +141,31 @@ export interface Episode {
   title: string;
   episode_id: string;
   source: string;
-  /** Pass to /api/playlist.m3u8?url=. Never navigate users to it. */
+  /** Pass to /api/stream?url=. Never navigate users to it. */
   watch_url: string;
 }
+
+/** One video file of the backup server, to be read through the media worker. */
+export interface HdxSource {
+  /** "1080p" */
+  label: string;
+  height: number;
+  codec: string;
+  /** Bytes of the whole film. */
+  size: number;
+  /** Bytes per part; the parts after the first carry their number at the end of `url`. */
+  part_size: number;
+  url: string;
+  /** 32 hexadecimal characters, the key of the scrambled head. */
+  key: string;
+  /** Bytes at the start of the first part that are scrambled. */
+  encrypted_head: number;
+}
+
+/** What /api/stream says to play for one episode. */
+export type EngineStream =
+  | { success: true; type: "hls"; server: string; url: string }
+  | { success: true; type: "mp4"; server: string; sources: HdxSource[] };
 
 /** A related part of the same franchise (season 1, season 2, movie, special). */
 export interface SeasonPart {

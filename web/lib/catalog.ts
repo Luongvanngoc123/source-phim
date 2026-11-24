@@ -5,7 +5,7 @@ import {
   getSearch,
   getSuggest,
   getSeason,
-  playlistUrl,
+  streamInfoUrl,
 } from "./engine";
 import { detailToFilm, toMovie, toPagination } from "./adapter";
 import {
@@ -56,8 +56,9 @@ export function findEpisode(
   return undefined;
 }
 
+/** For anime this asks the engine which server to play; KKPhim hands over its playlist. */
 export function streamUrl(episode: IEpisode): string {
-  return episode.stream.kind === "engine" ? playlistUrl(episode.stream.url) : episode.stream.url;
+  return episode.stream.kind === "engine" ? streamInfoUrl(episode.stream.url) : episode.stream.url;
 }
 
 export async function getRelated(film: IFilm, limit = 12): Promise<IMovie[]> {

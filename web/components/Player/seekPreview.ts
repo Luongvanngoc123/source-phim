@@ -7,6 +7,8 @@ type HlsConstructor = typeof Hls;
 interface SeekPreviewOptions {
   art: Artplayer;
   src: string;
+  /** `file` for a single video file the browser can seek in by itself. */
+  mode: "hls" | "file";
   /** The hls.js class the main player loaded, or null while it has none (native playback). */
   hlsClass: () => HlsConstructor | null;
   /** The loaders the main player uses, so both players read the same timeline. */
@@ -31,6 +33,7 @@ const REST_DELAY_MS = 140;
 export function attachSeekPreview({
   art,
   src,
+  mode,
   hlsClass,
   hlsConfig,
 }: SeekPreviewOptions): () => void {
@@ -53,6 +56,7 @@ export function attachSeekPreview({
     (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData ===
     true;
   let hls: Hls | null = null;
+  let started = false;
   let ready = false;
   let framesUnavailable = saveData;
   let wanted: number | undefined;
@@ -67,15 +71,32 @@ export function attachSeekPreview({
   if (saveData) withoutFrame();
 
   const fetchFrame = (time: number) => {
-    if (!hls || !ready) return;
+    if (!ready) return;
     tip.classList.add("avs-seek-preview-loading");
-    hls.startLoad(time);
+    hls?.startLoad(time);
     video.currentTime = time;
   };
 
+  const onMetadata = () => {
+    ready = true;
+    if (wanted !== undefined) fetchFrame(wanted);
+  };
+  const onFileError = () => withoutFrame();
+
   const startPlayer = () => {
+    if (started || framesUnavailable) return;
+    if (mode === "file") {
+      // The browser reads the index of the file, then only the stretch around each stop.
+      started = true;
+      video.addEventListener("loadedmetadata", onMetadata);
+      video.addEventListener("error", onFileError);
+      video.preload = "metadata";
+      video.src = src;
+      return;
+    }
     const HlsClass = hlsClass();
-    if (hls || framesUnavailable || !HlsClass) return;
+    if (!HlsClass) return;
+    started = true;
     const instance = new HlsClass({
       ...hlsConfig(HlsClass),
       // One frame is wanted, not playback: load on request only, keep next to nothing
@@ -121,7 +142,7 @@ export function attachSeekPreview({
     wanted = time;
     window.clearTimeout(restTimer);
     restTimer = window.setTimeout(() => {
-      if (hls) fetchFrame(time);
+      if (started) fetchFrame(time);
       else startPlayer();
     }, REST_DELAY_MS);
   };
@@ -173,11 +194,18 @@ export function attachSeekPreview({
     art.off("setBar", onSetBar);
     art.off("document:mouseup", onMouseUp);
     video.removeEventListener("seeked", onSeeked);
+    video.removeEventListener("loadedmetadata", onMetadata);
+    video.removeEventListener("error", onFileError);
     progress.removeEventListener("mousedown", onMouseDown);
     document.removeEventListener("touchend", hide);
     document.removeEventListener("touchcancel", hide);
     hls?.destroy();
     hls = null;
+    if (mode === "file") {
+      // Without its source the element lets go of the open download.
+      video.removeAttribute("src");
+      video.load();
+    }
     tip.remove();
   };
 }

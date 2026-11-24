@@ -11,6 +11,8 @@ import type {
   PlaylistLoaderConstructor,
 } from "hls.js";
 import { stripAdBreaks } from "../../lib/adfilter";
+import { API_BASE, EngineError, getStream } from "../../lib/engine";
+import { defaultSourceIndex, ensureHdxWorker, hdxMediaUrl } from "../../lib/hdx";
 import { attachSeekPreview } from "./seekPreview";
 import styles from "./VideoPlayer.module.css";
 
@@ -18,7 +20,14 @@ type HlsConstructor = typeof Hls;
 type ArtControl = NonNullable<ArtOption["controls"]>[number];
 type ArtLayer = NonNullable<ArtOption["layers"]>[number];
 type PlaybackState = "preparing" | "ready" | "error";
-type PlaybackError = "not-found" | "fatal" | null;
+type PlaybackError = "not-found" | "no-source" | "no-worker" | "fatal" | null;
+
+const ERROR_TEXT: Record<NonNullable<PlaybackError>, string> = {
+  "not-found": "Tập này chưa có nguồn phát.",
+  "no-source": "Nguồn phát của tập này đang lỗi. Thử lại sau ít phút.",
+  "no-worker": "Trình duyệt này không phát được máy chủ dự phòng. Hãy thử trình duyệt khác.",
+  fatal: "Không thể phát tập này.",
+};
 
 // The library's default play icon is a disc with a triangle; drawn inside this player's own
 // round button it reads as two stacked icons, so a bare triangle replaces it.
@@ -27,6 +36,7 @@ const STATE_ICON =
 const LOADING_ICON = '<span class="avs-player-spinner"></span>';
 
 export interface VideoPlayerProps {
+  /** For anime the engine's /api/stream URL, for KKPhim the playlist itself. */
   src: string;
   kind: "engine" | "direct";
   title: string;
@@ -366,10 +376,55 @@ export default function VideoPlayer({
         if (cancelled) {
           return;
         }
+        let mediaUrl = src;
+        let mediaType: "m3u8" | "mp4" = "m3u8";
+        let quality: ArtOption["quality"];
+        let previewUrl = src;
+        if (kind === "engine") {
+          let stream;
+          try {
+            stream = await getStream(src);
+          } catch (problem) {
+            setFatalError(
+              problem instanceof EngineError && problem.status === 404 ? "not-found" : "no-source",
+            );
+            return;
+          }
+          if (cancelled) {
+            return;
+          }
+          if (stream.type === "hls") {
+            mediaUrl = `${API_BASE}${stream.url}`;
+            previewUrl = mediaUrl;
+          } else {
+            if (stream.sources.length === 0) {
+              setFatalError("no-source");
+              return;
+            }
+            if (!(await ensureHdxWorker())) {
+              setFatalError("no-worker");
+              return;
+            }
+            if (cancelled) {
+              return;
+            }
+            const chosen = defaultSourceIndex(stream.sources);
+            mediaUrl = hdxMediaUrl(stream.sources[chosen]);
+            mediaType = "mp4";
+            quality = stream.sources.map((source, index) => ({
+              default: index === chosen,
+              html: source.label,
+              url: hdxMediaUrl(source),
+            }));
+            // Every preview stop downloads real video, so it reads the smallest file.
+            previewUrl = hdxMediaUrl(stream.sources[stream.sources.length - 1]);
+          }
+        }
         const options: ArtOption = {
           container,
-          url: src,
-          type: "m3u8",
+          url: mediaUrl,
+          type: mediaType,
+          ...(quality ? { quality } : {}),
           poster,
           theme: "rgb(var(--primary))",
           icons: { state: STATE_ICON, loading: LOADING_ICON },
@@ -469,7 +524,8 @@ export default function VideoPlayer({
         art = new Artplayer(options);
         detachSeekPreview = attachSeekPreview({
           art,
-          src,
+          src: previewUrl,
+          mode: mediaType === "mp4" ? "file" : "hls",
           hlsClass: () => loadedHlsClass,
           hlsConfig: (HlsClass) => ({
             fLoader: makeFragmentLoader(HlsClass),
@@ -487,6 +543,13 @@ export default function VideoPlayer({
             setState("ready");
           }
         });
+        if (mediaType === "mp4") {
+          // hls.js reports its own failures; a plain file only has the element's error.
+          video.addEventListener("error", () => setFatalError("fatal"));
+          video.addEventListener("playing", () => showNotice("Đang phát từ máy chủ dự phòng HDX"), {
+            once: true,
+          });
+        }
         video.addEventListener("playing", onPlaying);
         video.addEventListener("pause", onPause);
         video.addEventListener("seeked", onSeeked);
@@ -536,7 +599,7 @@ export default function VideoPlayer({
       )}
       {state === "error" && (
         <div className={styles.overlay} role="alert">
-          <p>{error === "not-found" ? "Tập này chưa có nguồn phát." : "Không thể phát tập này."}</p>
+          <p>{ERROR_TEXT[error ?? "fatal"]}</p>
           <button type="button" className={styles.retry} onClick={retry}>
             Thử lại
           </button>
