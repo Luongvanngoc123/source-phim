@@ -182,6 +182,11 @@ export async function removeProgress(id: string): Promise<void> {
   await request(`/api/me/progress?id=${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+/** Removes every saved position of the signed-in account, including those no list shows. */
+export async function clearProgress(): Promise<void> {
+  await request("/api/me/progress?all=1", { method: "DELETE" });
+}
+
 export function toFilmRef(movie: IMovie): FilmRef {
   return {
     id: movie.slug,

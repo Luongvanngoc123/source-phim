@@ -2,15 +2,24 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode, ReactElement } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { toast } from "react-hot-toast";
 import { useAuth } from "@/context/AuthContext";
-import { accountErrorMessage, getProgress, removeProgress } from "@/lib/account";
+import { accountErrorMessage, clearProgress, getProgress, removeProgress } from "@/lib/account";
 import type { ProgressEntry } from "@/lib/account";
-import { getLocalProgress, latestFilmProgress, removeLocalProgress } from "@/lib/progress";
+import {
+  clearLocalProgress,
+  getLocalProgress,
+  latestFilmProgress,
+  removeLocalProgress,
+} from "@/lib/progress";
 import { paths } from "@/lib/paths";
 
 export default function ContinuePage(): ReactElement {
   const { user, loading, openAuth } = useAuth();
   const [entries, setEntries] = useState<ProgressEntry[]>([]);
+  // Films with any saved position. More than are listed: a film whose latest episode is
+  // finished or barely started has nothing to continue, yet its position is still kept.
+  const [storedFilms, setStoredFilms] = useState(0);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,8 +28,10 @@ export default function ContinuePage(): ReactElement {
     setError(null);
     try {
       const values = user ? await getProgress() : getLocalProgress();
+      const latest = latestFilmProgress(values);
+      setStoredFilms(latest.length);
       setEntries(
-        latestFilmProgress(values).filter(
+        latest.filter(
           (entry) =>
             entry.position >= 30 && (entry.duration <= 0 || entry.duration - entry.position >= 60),
         ),
@@ -51,15 +62,49 @@ export default function ContinuePage(): ReactElement {
       // An account's history is on the server as well; a visitor's exists only here.
       if (user) await removeProgress(id);
       removeLocalProgress(id);
+      setStoredFilms((count) => Math.max(0, count - 1));
     } catch (reason: unknown) {
       setEntries(previous);
       setError(accountErrorMessage(reason));
     }
   };
 
+  const clearAll = async () => {
+    if (!window.confirm("Xóa toàn bộ lịch sử xem? Việc này không thể hoàn tác.")) return;
+    try {
+      if (user) await clearProgress();
+      clearLocalProgress();
+      setEntries([]);
+      setStoredFilms(0);
+      toast.success("Đã xóa toàn bộ lịch sử xem.");
+    } catch (reason: unknown) {
+      setError(accountErrorMessage(reason));
+    }
+  };
+
+  const hiddenFilms = storedFilms - entries.length;
+
   return (
     <PageShell>
-      <h1 className="text-white text-2xl font-semibold">Xem tiếp</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-white text-2xl font-semibold">Xem tiếp</h1>
+        {storedFilms > 0 && (
+          <button
+            type="button"
+            onClick={() => void clearAll()}
+            className="inline-flex items-center gap-2 rounded-full border border-white/20 px-4 py-2 text-xs text-gray-200 transition-colors hover:border-red-400 hover:text-red-400"
+          >
+            <i className="fa-solid fa-trash-can" aria-hidden="true" />
+            Xóa tất cả lịch sử
+          </button>
+        )}
+      </div>
+      {!busy && hiddenFilms > 0 && (
+        <p className="text-gray-400 text-sm mt-3">
+          Còn {hiddenFilms} phim có lịch sử nhưng không hiện ở đây, vì tập gần nhất đã xem xong hoặc
+          mới xem dưới 30 giây. Nút &quot;Xóa tất cả lịch sử&quot; xóa cả những phim đó.
+        </p>
+      )}
       {!user && (
         <p className="text-gray-400 text-sm mt-3">
           Danh sách này chỉ lưu trên trình duyệt này.{" "}

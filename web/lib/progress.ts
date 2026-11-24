@@ -4,6 +4,8 @@ import type { FilmRef, ProgressEntry } from "@/lib/account";
 import { useAuth } from "@/context/AuthContext";
 
 const STORAGE_KEY = "animora_progress";
+/** The one episode being watched right now, written every second for an exact resume. */
+const LIVE_STORAGE_KEY = "animora_live_progress";
 const MAX_FILMS = 100;
 const STORE_EVENT = "animora-progress-changed";
 
@@ -61,9 +63,11 @@ export function latestFilmProgress(entries: ProgressEntry[]): ProgressEntry[] {
   return [...latest.values()].sort((a, b) => b.updated_at - a.updated_at);
 }
 
+/** Forget everything this browser keeps about what was watched. */
 export function clearLocalProgress(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(LIVE_STORAGE_KEY);
   window.dispatchEvent(new Event(STORE_EVENT));
 }
 
@@ -86,8 +90,6 @@ export async function syncLocalProgress(userId: number): Promise<void> {
     // Keep browser progress so a transient failure can be retried after the next sign-in.
   }
 }
-
-const LIVE_STORAGE_KEY = "animora_live_progress";
 
 type LiveProgress = { owner: string; entry: ProgressEntry };
 

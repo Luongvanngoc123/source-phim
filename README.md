@@ -163,7 +163,7 @@ Tài khoản do engine quản lý, lưu trong `DATA_DIR/accounts.db` (SQLite, ch
 | `POST /api/auth/profile` `{display_name}` | Đổi tên hiển thị |
 | `POST /api/auth/password` `{current_password, new_password}` | Đổi mật khẩu, xoá mọi phiên khác |
 | `GET` / `PUT {film}` / `DELETE ?id=` `/api/me/favorites` | Phim đã lưu (tối đa 500 phim mỗi tài khoản) |
-| `GET [?id=]` / `PUT {film, episode, position, duration}` / `DELETE ?id=` `/api/me/progress` | Vị trí đang xem của từng tập (giữ 2000 mục mới nhất) |
+| `GET [?id=]` / `PUT {film, episode, position, duration}` / `DELETE ?id=` hoặc `DELETE ?all=1` `/api/me/progress` | Vị trí đang xem của từng tập (giữ 2000 mục mới nhất). `GET` không kèm `id` trả tập mới nhất của mỗi phim, tối đa 100 phim. `DELETE ?id=` xoá mọi tập của một phim; `DELETE ?all=1` xoá toàn bộ lịch sử của tài khoản |
 
 - Mật khẩu được băm bằng Argon2id (19 MiB, 2 vòng) với muối ngẫu nhiên; chỉ một phép băm chạy tại một thời điểm để giới hạn RAM.
 - Phiên là 32 byte ngẫu nhiên đặt trong cookie `avs_session` (`HttpOnly`, `SameSite=Lax`, `Secure` khi đi qua HTTPS, 30 ngày); cơ sở dữ liệu chỉ giữ SHA-256 của nó.
@@ -172,6 +172,7 @@ Tài khoản do engine quản lý, lưu trong `DATA_DIR/accounts.db` (SQLite, ch
 - Tên đăng nhập: 3-32 ký tự `A-Z a-z 0-9 _ . -`, không phân biệt hoa thường. Mật khẩu: 8-128 ký tự. Tên hiển thị: 1-40 ký tự.
 - Khách chưa đăng nhập vẫn có "Xem tiếp": tiến độ nằm trong `localStorage` của trình duyệt và được chuyển lên tài khoản ở lần đăng nhập kế tiếp.
 - Tải lại trang là xem tiếp đúng vị trí: trình phát ghi vị trí vào `localStorage` (`animora_live_progress`) mỗi giây và ngay lúc trang bị đóng hoặc tải lại; với tài khoản, vị trí còn được gửi lên máy chủ khi tạm dừng, khi rời trang (`keepalive`) và tối đa 10 giây một lần trong lúc phát. Lúc mở lại, `hls.js` bắt đầu tải thẳng từ vị trí đó.
+- Xoá là xoá hẳn: nút × ở `/xem-tiep` xoá một phim, nút "Xóa tất cả lịch sử" xoá mọi vị trí đã lưu (kể cả những phim không hiện trong danh sách vì tập gần nhất đã xem xong hoặc mới xem dưới 30 giây); cả hai cũng xoá bản sao trong trình duyệt. Database chạy với `secure_delete`, và sau mỗi lần xoá lịch sử hay phim đã lưu engine gộp rồi cắt file WAL, nên nội dung đã xoá không còn nằm lại trong `accounts.db` hay `accounts.db-wal`. Database tạo bởi bản trước (schema 1) được `VACUUM` một lần khi engine mở nó.
 - `GET /health` trả `account_store_open`. Không mở được cơ sở dữ liệu thì phần còn lại của engine vẫn chạy, riêng các endpoint tài khoản trả `503`.
 
 **Sao lưu:** toàn bộ dữ liệu người dùng là volume `avs-accounts` (thư mục `/data` trong container). Mất volume là mất tài khoản.
