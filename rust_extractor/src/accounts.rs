@@ -725,14 +725,21 @@ fn progress_remove(
         Ok(value) => value,
         Err(error) => return Err(Some((stream, error))),
     };
-    let film_id = query_param(&request.query, "id").filter(|value| valid_film_id(value));
-    let Some(film_id) = film_id else {
-        return Err(Some((stream, invalid("id"))));
-    };
     let Some(store) = state.store.as_ref() else {
         return Err(Some((stream, unavailable_error())));
     };
-    if store.delete_progress(auth.user.id, &film_id).is_err() {
+    // Clearing everything has to be asked for by name: a request that merely lost its `id`
+    // must not empty the history.
+    let removed = if query_param(&request.query, "all").as_deref() == Some("1") {
+        store.clear_progress(auth.user.id)
+    } else {
+        let film_id = query_param(&request.query, "id").filter(|value| valid_film_id(value));
+        let Some(film_id) = film_id else {
+            return Err(Some((stream, invalid("id"))));
+        };
+        store.delete_progress(auth.user.id, &film_id)
+    };
+    if removed.is_err() {
         return Err(Some((stream, unavailable_error())));
     }
     send_json(

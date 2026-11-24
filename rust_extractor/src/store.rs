@@ -4,7 +4,44 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
+
+const CREATE_SCHEMA: &str = "
+    CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        password_phc TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX users_username_lower ON users(lower(username));
+    CREATE TABLE sessions (
+        token_hash BLOB PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX sessions_user_id ON sessions(user_id);
+    CREATE TABLE favorites (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        film_id TEXT NOT NULL,
+        film_json TEXT NOT NULL,
+        saved_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, film_id)
+    );
+    CREATE INDEX favorites_newest ON favorites(user_id, saved_at DESC);
+    CREATE TABLE progress (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        film_id TEXT NOT NULL,
+        episode_slug TEXT NOT NULL,
+        episode_name TEXT NOT NULL,
+        film_json TEXT NOT NULL,
+        position REAL NOT NULL,
+        duration REAL NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, film_id, episode_slug)
+    );
+    CREATE INDEX progress_updated ON progress(user_id, updated_at DESC);
+";
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -74,51 +111,23 @@ impl AccountStore {
 
     fn configure(connection: Connection) -> Result<Self, StoreError> {
         connection.pragma_update(None, "journal_mode", "WAL")?;
+        // A removed row is overwritten with zeros. By default SQLite only marks its space as
+        // free, and what a viewer asked to forget would stay readable in the file.
+        connection.pragma_update(None, "secure_delete", "ON")?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version == 0 {
-            connection.execute_batch(
-                "BEGIN;
-                 CREATE TABLE users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL,
-                    password_phc TEXT NOT NULL,
-                    display_name TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                 );
-                 CREATE UNIQUE INDEX users_username_lower ON users(lower(username));
-                 CREATE TABLE sessions (
-                    token_hash BLOB PRIMARY KEY,
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    expires_at INTEGER NOT NULL
-                 );
-                 CREATE INDEX sessions_user_id ON sessions(user_id);
-                 CREATE TABLE favorites (
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    film_id TEXT NOT NULL,
-                    film_json TEXT NOT NULL,
-                    saved_at INTEGER NOT NULL,
-                    PRIMARY KEY(user_id, film_id)
-                 );
-                 CREATE INDEX favorites_newest ON favorites(user_id, saved_at DESC);
-                 CREATE TABLE progress (
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    film_id TEXT NOT NULL,
-                    episode_slug TEXT NOT NULL,
-                    episode_name TEXT NOT NULL,
-                    film_json TEXT NOT NULL,
-                    position REAL NOT NULL,
-                    duration REAL NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    PRIMARY KEY(user_id, film_id, episode_slug)
-                 );
-                 CREATE INDEX progress_updated ON progress(user_id, updated_at DESC);
-                 PRAGMA user_version = 1;
-                 COMMIT;",
-            )?;
-        } else if version != SCHEMA_VERSION {
-            return Err(StoreError::Unavailable);
+        match version {
+            0 => connection.execute_batch(&format!(
+                "BEGIN; {CREATE_SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))?,
+            // Version 1 has the same tables but removed rows without overwriting them. The
+            // file is rebuilt once, which drops the free space those rows still sit in.
+            1 => connection
+                .execute_batch(&format!("VACUUM; PRAGMA user_version = {SCHEMA_VERSION};"))?,
+            SCHEMA_VERSION => {}
+            _ => return Err(StoreError::Unavailable),
         }
+        empty_write_ahead_log(&connection);
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -369,6 +378,7 @@ impl AccountStore {
             "DELETE FROM favorites WHERE user_id = ?1 AND film_id = ?2",
             params![user_id, film_id],
         )?;
+        empty_write_ahead_log(&connection);
         Ok(())
     }
 
@@ -447,8 +457,27 @@ impl AccountStore {
             "DELETE FROM progress WHERE user_id = ?1 AND film_id = ?2",
             params![user_id, film_id],
         )?;
+        empty_write_ahead_log(&connection);
         Ok(())
     }
+
+    /// Removes every saved position of one account, listed in the client or not.
+    pub fn clear_progress(&self, user_id: i64) -> Result<(), StoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| StoreError::Unavailable)?;
+        connection.execute("DELETE FROM progress WHERE user_id = ?1", params![user_id])?;
+        empty_write_ahead_log(&connection);
+        Ok(())
+    }
+}
+
+/// Folds the write-ahead log into the database file and truncates it. The log keeps each page
+/// as it was before a change, so until this runs a removed row is still on disk there.
+fn empty_write_ahead_log(connection: &Connection) {
+    // Best effort: the change itself is already committed, and the next call tries again.
+    let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
 }
 
 fn progress_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Progress> {
@@ -483,5 +512,137 @@ mod tests {
             }
         }
         assert_eq!(store.list_favorites(user.id).expect("favorites").len(), 500);
+    }
+
+    /// A directory under the system temp dir, removed when the test ends.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("avs-store-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("temp dir");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Whether the text occurs anywhere in the database file or its write-ahead log.
+    fn on_disk(dir: &Path, text: &str) -> bool {
+        ["accounts.db", "accounts.db-wal"].iter().any(|name| {
+            fs::read(dir.join(name)).is_ok_and(|bytes| {
+                bytes
+                    .windows(text.len())
+                    .any(|window| window == text.as_bytes())
+            })
+        })
+    }
+
+    fn episode(slug: &str) -> Episode {
+        Episode {
+            slug: slug.to_string(),
+            name: slug.to_string(),
+        }
+    }
+
+    #[test]
+    fn removed_history_and_saved_films_leave_nothing_on_disk() {
+        let dir = TempDir::new("removed");
+        let store = AccountStore::open(&dir.0).expect("store");
+        let user = store.create_user("Alice", "phc", "Alice", 1).expect("user");
+        for (film, title, at) in [
+            ("film-one-marker", r#"{"title":"title-one-marker"}"#, 1),
+            ("film-two-marker", r#"{"title":"title-two-marker"}"#, 2),
+        ] {
+            store
+                .upsert_progress(user.id, film, title, &episode("tap-01"), 10.0, 100.0, at)
+                .expect("progress");
+        }
+        store
+            .save_favorite(
+                user.id,
+                "film-saved-marker",
+                r#"{"title":"title-saved-marker"}"#,
+                3,
+            )
+            .expect("favorite");
+        // The probe sees rows that are stored, so the checks below mean something.
+        assert!(on_disk(&dir.0, "title-one-marker"));
+
+        store
+            .delete_progress(user.id, "film-one-marker")
+            .expect("delete");
+        assert!(!on_disk(&dir.0, "one-marker"));
+        assert!(on_disk(&dir.0, "title-two-marker"));
+
+        store.clear_progress(user.id).expect("clear");
+        assert!(!on_disk(&dir.0, "two-marker"));
+
+        store
+            .remove_favorite(user.id, "film-saved-marker")
+            .expect("remove");
+        assert!(!on_disk(&dir.0, "saved-marker"));
+    }
+
+    #[test]
+    fn clearing_history_spares_other_accounts_and_saved_films() {
+        let store = AccountStore::in_memory().expect("store");
+        let alice = store.create_user("Alice", "phc", "Alice", 1).expect("user");
+        let bob = store.create_user("Bob", "phc", "Bob", 1).expect("user");
+        for (user, film) in [(&alice, "a1"), (&alice, "a2"), (&bob, "b1")] {
+            // The listing reads the film id out of the stored JSON, as the API writes it.
+            let json = format!(r#"{{"id":"{film}"}}"#);
+            store
+                .upsert_progress(user.id, film, &json, &episode("tap-01"), 10.0, 100.0, 1)
+                .expect("progress");
+        }
+        store
+            .save_favorite(alice.id, "a1", "{}", 1)
+            .expect("favorite");
+
+        store.clear_progress(alice.id).expect("clear");
+
+        assert!(store
+            .list_progress(alice.id, None)
+            .expect("list")
+            .is_empty());
+        assert_eq!(store.list_progress(bob.id, None).expect("list").len(), 1);
+        assert_eq!(store.list_favorites(alice.id).expect("favorites").len(), 1);
+    }
+
+    #[test]
+    fn version_one_database_is_upgraded_and_scrubbed() {
+        let dir = TempDir::new("upgrade");
+        {
+            // A database as the first release left it: the same tables, and a row removed
+            // without being overwritten.
+            let old = Connection::open(dir.0.join("accounts.db")).expect("open");
+            old.pragma_update(None, "journal_mode", "WAL").expect("wal");
+            old.pragma_update(None, "secure_delete", "OFF")
+                .expect("pragma");
+            old.execute_batch(&format!(
+                "BEGIN; {CREATE_SCHEMA} PRAGMA user_version = 1; COMMIT;
+                 INSERT INTO users (username, password_phc, display_name, created_at)
+                 VALUES ('Alice', 'phc', 'Alice', 1);
+                 INSERT INTO progress VALUES
+                 (1, 'film-kept-marker', 't', 't', '{{\"id\":\"film-kept-marker\"}}', 1.0, 9.0, 1);
+                 INSERT INTO progress VALUES (1, 'film-gone-marker', 't', 't', '{{}}', 1.0, 9.0, 2);
+                 DELETE FROM progress WHERE film_id = 'film-gone-marker';"
+            ))
+            .expect("old database");
+        }
+        assert!(on_disk(&dir.0, "film-gone-marker"));
+
+        let store = AccountStore::open(&dir.0).expect("upgrade");
+
+        assert!(!on_disk(&dir.0, "film-gone-marker"));
+        assert_eq!(store.list_progress(1, None).expect("list").len(), 1);
+        assert!(store.find_user("alice").expect("find").is_some());
     }
 }
