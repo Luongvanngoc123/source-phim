@@ -19,6 +19,12 @@ type ArtLayer = NonNullable<ArtOption["layers"]>[number];
 type PlaybackState = "preparing" | "ready" | "error";
 type PlaybackError = "not-found" | "fatal" | null;
 
+// The library's default play icon is a disc with a triangle; drawn inside this player's own
+// round button it reads as two stacked icons, so a bare triangle replaces it.
+const STATE_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
+const LOADING_ICON = '<span class="avs-player-spinner"></span>';
+
 export interface VideoPlayerProps {
   src: string;
   kind: "engine" | "direct";
@@ -363,6 +369,7 @@ export default function VideoPlayer({
           type: "m3u8",
           poster,
           theme: "rgb(var(--primary))",
+          icons: { state: STATE_ICON, loading: LOADING_ICON },
           cssVar: {
             "--art-theme": "rgb(var(--primary))",
             "--art-progress-height": "3px",
@@ -499,7 +506,7 @@ export default function VideoPlayer({
   };
 
   return (
-    <div ref={rootRef} className={styles.player} tabIndex={0}>
+    <div ref={rootRef} className={styles.player} data-state={state} tabIndex={0}>
       {/* The player library rebuilds this element's content, so React renders nothing in it. */}
       <div ref={containerRef} className={styles.stage} />
       {state === "preparing" && (

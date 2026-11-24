@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import Play from "@/components/loading/play";
@@ -48,54 +48,36 @@ export default function EpisodeList({
     setOpenRange(currentRange);
   }, [currentRange]);
 
+  const rangeStripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // On a phone the ranges sit in one row that scrolls sideways; bring the open one into
+    // view. Only the strip moves: scrollIntoView would also drag the page down to it.
+    const strip = rangeStripRef.current;
+    const active = strip?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (strip && active) {
+      strip.scrollLeft = active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+    }
+  }, [openRange, ranges.length]);
+
   const visibleEpisodes = ranges[openRange] ?? [];
   const rangeStart = openRange * RANGE_SIZE + 1;
   const rangeEnd = rangeStart + visibleEpisodes.length - 1;
 
   return (
     <section>
-      <div className="flex w-full items-start justify-between py-5 lg:items-center lg:py-8">
-        <div className="flex flex-col items-start space-y-4 lg:flex-row lg:items-center lg:space-x-6 lg:space-y-0">
-          <h2 className="flex items-center space-x-3 text-xl font-semibold text-white">
-            <i className="fa-solid fa-bars-staggered text-primary" />
-            <span>Tập phim</span>
-          </h2>
-          {servers.length > 1 && (
-            <div className="flex max-w-full flex-wrap gap-2" aria-label="Chọn máy chủ">
-              {servers.map((server, index) => (
-                <button
-                  key={`${server.name}-${index}`}
-                  type="button"
-                  aria-pressed={index === currentServerIndex}
-                  onClick={() => onServerChange(index)}
-                  className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${index === currentServerIndex ? "border-primary bg-primary/10 text-primary" : "border-gray-700 text-gray-400 hover:text-white"}`}
-                >
-                  {server.name}
-                </button>
-              ))}
-            </div>
-          )}
-          {ranges.length > 1 && (
-            <div className="flex max-w-full flex-wrap gap-2">
-              {ranges.map((range, index) => {
-                const start = index * RANGE_SIZE + 1;
-                const end = start + range.length - 1;
-                return (
-                  <button
-                    key={`${start}-${end}`}
-                    type="button"
-                    onClick={() => setOpenRange(index)}
-                    className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${openRange === index ? "border-primary bg-primary/10 text-primary" : "border-gray-700 text-gray-400 hover:text-white"}`}
-                  >
-                    {rangeLabel(start, end)}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        <button type="button" onClick={onToggleCollapsed} className="flex items-center space-x-2">
-          <span className="text-[13px] text-white">Rút gọn</span>
+      {/* Phone: title and switch on one row, the pickers on their own full-width row below.
+          Desktop: title, pickers and switch on a single row. */}
+      <div className="grid w-full grid-cols-[1fr_auto] items-center gap-x-4 gap-y-4 py-5 lg:flex lg:gap-x-6 lg:py-8">
+        <h2 className="order-1 flex flex-none items-center space-x-3 whitespace-nowrap text-xl font-semibold text-white">
+          <i className="fa-solid fa-bars-staggered text-primary" />
+          <span>Tập phim</span>
+        </h2>
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          className="order-2 flex items-center space-x-2 lg:order-3 lg:ml-auto"
+        >
+          <span className="whitespace-nowrap text-[13px] text-white">Rút gọn</span>
           <span
             className={`relative flex h-[18px] w-[30px] flex-shrink-0 rounded-2xl border transition-colors duration-300 ${collapsed ? "border-primary bg-[#ffffff10]" : "border-gray-600"}`}
           >
@@ -104,6 +86,48 @@ export default function EpisodeList({
             />
           </span>
         </button>
+        {(servers.length > 1 || ranges.length > 1) && (
+          <div className="order-3 col-span-2 flex min-w-0 flex-col gap-3 lg:order-2 lg:flex-row lg:items-center lg:gap-6">
+            {servers.length > 1 && (
+              <div className="flex max-w-full flex-wrap gap-2" aria-label="Chọn máy chủ">
+                {servers.map((server, index) => (
+                  <button
+                    key={`${server.name}-${index}`}
+                    type="button"
+                    aria-pressed={index === currentServerIndex}
+                    onClick={() => onServerChange(index)}
+                    className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${index === currentServerIndex ? "border-primary bg-primary/10 text-primary" : "border-gray-700 text-gray-400 hover:text-white"}`}
+                  >
+                    {server.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {ranges.length > 1 && (
+              <div
+                ref={rangeStripRef}
+                className="relative flex max-w-full gap-2 overflow-x-auto pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0"
+                aria-label="Chọn khoảng tập"
+              >
+                {ranges.map((range, index) => {
+                  const start = index * RANGE_SIZE + 1;
+                  const end = start + range.length - 1;
+                  return (
+                    <button
+                      key={`${start}-${end}`}
+                      type="button"
+                      aria-pressed={openRange === index}
+                      onClick={() => setOpenRange(index)}
+                      className={`flex-none whitespace-nowrap rounded-md border px-3 py-1.5 text-xs transition-colors ${openRange === index ? "border-primary bg-primary/10 text-primary" : "border-gray-700 text-gray-400 hover:text-white"}`}
+                    >
+                      {rangeLabel(start, end)}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {visibleEpisodes.length === 0 ? (

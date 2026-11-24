@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, Suspense } from "react";
+import { useEffect, useState, Suspense } from "react";
 import dynamic from "next/dynamic";
 import { Toaster } from "react-hot-toast";
 import LoadingOverlay from "@/components/loading/loader";
@@ -20,14 +20,6 @@ const Footer = dynamic(() => import("@/layouts/default/Footer"), { ssr: false })
 
 const AppContent = ({ Component, pageProps }: AppPropsWithLayout) => {
   const [loading, setLoading] = useState(true);
-  const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
-
-  useIsomorphicLayoutEffect(() => {
-    document.documentElement.style.setProperty("--primary", "255 216 117");
-    document.documentElement.style.setProperty("--primary-light", "255 231 166");
-    document.documentElement.style.setProperty("--bg-body", "25 27 36");
-    document.documentElement.style.setProperty("--bg-body2", "39 44 67");
-  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setLoading(false), 800);

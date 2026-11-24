@@ -138,8 +138,13 @@ const Navbar: React.FC<NavbarProps> = ({
         "flex top-0 z-50 w-full transition-all duration-100 flex-col items-center",
         router.pathname === "/" || router.pathname === "/phim/[slug]"
           ? "sticky lg:fixed"
-          : "sticky",
-        isScrolled ? "bg-[#080B1Dd4]" : "bg-transparent",
+          : // On a small screen the watch page lets the header scroll away: pinned, it sat on
+            // top of the episode list the viewer scrolls down to.
+            router.pathname === "/phim/[slug]/[tap]"
+            ? "relative xl:sticky"
+            : "sticky",
+        // Nearly opaque and blurred, so the page passing beneath is not read through it.
+        isScrolled ? "bg-[#080B1Df2] backdrop-blur-md" : "bg-transparent",
       )}
     >
       <div

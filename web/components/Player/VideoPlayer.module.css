@@ -9,9 +9,22 @@
   outline: none;
 }
 
+/* Its own stacking context: the overlays that follow it then cover the whole player,
+   including the layers the library gives a higher z-index than theirs. */
 .stage {
+  position: relative;
+  z-index: 0;
   width: 100%;
   height: 100%;
+}
+
+/* While an overlay is up it is the only indicator: the player's own spinner and play
+   button would otherwise show through it. */
+.player[data-state="preparing"] :global(.art-video-player .art-loading),
+.player[data-state="preparing"] :global(.art-video-player .art-mask),
+.player[data-state="error"] :global(.art-video-player .art-loading),
+.player[data-state="error"] :global(.art-video-player .art-mask) {
+  display: none;
 }
 
 .player :global(.art-video-player) {
@@ -21,6 +34,7 @@
   --art-background-color: #050505;
   --art-font-color: #fff;
   --art-control-opacity: 0.94;
+  --art-state-opacity: 1;
 }
 
 .player :global(.art-video) {
@@ -98,8 +112,10 @@
 }
 
 .player :global(.art-video-player .art-state svg) {
-  width: 25px;
-  height: 25px;
+  width: 30px;
+  height: 30px;
+  /* A triangle looks off-centre when its box is centred. */
+  margin-left: 4px;
 }
 
 .player :global(.avs-player-control) {
@@ -165,7 +181,8 @@
   font-size: 12px;
 }
 
-.spinner {
+.spinner,
+.player :global(.avs-player-spinner) {
   display: block;
   width: 30px;
   height: 30px;
@@ -173,6 +190,11 @@
   border-top-color: rgb(var(--primary));
   border-radius: 50%;
   animation: player-spin 800ms linear infinite;
+}
+
+.player :global(.avs-player-spinner) {
+  width: 42px;
+  height: 42px;
 }
 
 .retry {

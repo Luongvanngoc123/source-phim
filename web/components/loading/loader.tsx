@@ -1,11 +1,14 @@
 import Wordmark from "@/components/Wordmark";
 
+/** Full-screen placeholder shown until the page has what it needs to draw. */
 const LoadingOverlay = () => (
-  <div className="fixed inset-0 z-[1000] flex justify-center items-center bg-[url(/images/home-background.jpg)] animate-bodyLoadEffect">
-    <div className="bl-logo flex flex-col items-center gap-8 text-4xl font-semibold text-white/30 animate-logoLoad max-w-[800px]">
-      <Wordmark className="text-5xl" />
-      <div className="text-center">Xem Anime Miễn Phí, Chất Lượng Cao Và Cập Nhật Liên Tục</div>
-    </div>
+  <div
+    role="status"
+    aria-label="Đang tải"
+    className="fixed inset-0 z-[1000] flex flex-col items-center justify-center gap-6 bg-bg-body"
+  >
+    <Wordmark className="text-4xl sm:text-5xl" />
+    <span className="h-8 w-8 animate-spin rounded-full border-[3px] border-white/15 border-t-primary" />
   </div>
 );
 

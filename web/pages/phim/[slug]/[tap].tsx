@@ -153,7 +153,7 @@ const XemPhim: NextPage = () => {
         )}
       >
         {/* Capped to the viewport so the controls stay on screen; the video letterboxes. */}
-        <div className="relative z-[15] aspect-video max-h-[calc(100vh-11rem)] w-full overflow-hidden bg-black md:rounded-t-xl">
+        <div className="relative z-[15] aspect-video max-h-[calc(100vh-11rem)] w-full overflow-hidden bg-black md:rounded-xl lg:rounded-b-none">
           <VideoPlayer
             key={src}
             src={src}
@@ -167,7 +167,8 @@ const XemPhim: NextPage = () => {
             nextLabel={nextEpisode ? `Tập sau: ${nextEpisode.name}` : undefined}
           />
         </div>
-        <div className="bg-[#08080A] py-3 md:rounded-b-xl">
+        {/* Its switches are desktop-only, so below that width the bar would be an empty band. */}
+        <div className="hidden bg-[#08080A] py-3 lg:block lg:rounded-b-xl">
           <div className="flex w-full justify-between px-5">
             <div className="flex items-center space-x-3">
               <button
