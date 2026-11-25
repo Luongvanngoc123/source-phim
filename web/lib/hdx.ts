@@ -2,7 +2,7 @@ import { API_BASE } from "./engine";
 import type { HdxSource } from "@/types/engine";
 
 /** The worker that serves the backup server's files; see `public/hdx-sw.js`. */
-const WORKER_URL = "/hdx-sw.js";
+const WORKER_URL = "/hdx-sw.js?v=2";
 const CLAIM_TIMEOUT_MS = 3000;
 
 let registration: Promise<boolean> | null = null;

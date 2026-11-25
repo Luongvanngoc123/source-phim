@@ -261,7 +261,9 @@ fn cache_control_for(request_path: &str, path: &Path) -> &'static str {
     });
     if immutable {
         "public, max-age=31536000, immutable"
-    } else if path.extension().and_then(|ext| ext.to_str()) == Some("html") {
+    } else if path.extension().and_then(|ext| ext.to_str()) == Some("html")
+        || path.file_name().and_then(|name| name.to_str()) == Some("hdx-sw.js")
+    {
         "no-cache"
     } else {
         "public, max-age=86400"
