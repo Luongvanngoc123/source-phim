@@ -202,6 +202,21 @@ pub fn shape_sources(media: &Value) -> Vec<Value> {
     sources.into_iter().map(|(_, source)| source).collect()
 }
 
+/// Whether the backup server offered a file for this episode that this engine cannot read.
+///
+/// Some episodes are stored in a newer, path-addressed form the player fetches through its
+/// own worker with a per-chunk signed token. We do not reproduce that, so an episode served
+/// only that way is a source that exists but is unplayable here, not a missing one.
+fn has_unsupported_source(media: &Value) -> bool {
+    media
+        .get("mp4")
+        .and_then(|mp4| mp4.get("sources"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|entry| entry.get("status").and_then(Value::as_bool) == Some(true))
+}
+
 fn ajax_player(form: &str) -> Result<Map<String, Value>, String> {
     let url = format!("https://{}/ajax/player", parent_host());
     let body = scraper::fetch_avs_html(&url, Some(form))?;
@@ -325,6 +340,9 @@ pub fn hdx_sources(input: &str) -> Result<Value, String> {
         };
         let sources = shape_sources(&payload);
         if sources.is_empty() {
+            if has_unsupported_source(&payload) {
+                last = "UNAVAILABLE: Tập này hiện chỉ phát được trên máy chủ chính đang gặp sự cố. Thử lại sau ít phút.".into();
+            }
             continue;
         }
         return Ok(json!({
@@ -396,6 +414,21 @@ mod tests {
             vec![0xff, 0x01]
         );
         assert!(latin1_bytes("Ā").is_err());
+    }
+
+    #[test]
+    fn a_path_addressed_source_is_seen_as_unsupported_not_missing() {
+        // The newer form carries only sub/res_id/size, no url or path.
+        let media = json!({"mp4": {"sources": [
+            {"label": "360p", "res_id": 2, "size": 253594379, "codec": "h264", "status": true, "sub": "gi7owxbf32"}
+        ], "domains": ["gi7owxbf32.sssrr.org"]}});
+        assert!(shape_sources(&media).is_empty());
+        assert!(has_unsupported_source(&media));
+        // A film with no playable source at all is not called unsupported.
+        let none = json!({"mp4": {"sources": [
+            {"label": "360p", "size": 1, "status": false, "sub": "x"}
+        ]}});
+        assert!(!has_unsupported_source(&none));
     }
 
     #[test]
