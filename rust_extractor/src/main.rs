@@ -5,7 +5,7 @@ mod store;
 use accounts::AccountState;
 
 use avs_direct_m3u8::{
-    abyss::{fetch_sora_part, hdx_sources, sora_agent},
+    abyss::{hdx_sources, HdxPartCache},
     build_direct_cdn_m3u8, cdn_host, du_down_for, parent_host,
     scraper::{
         fetch_anime_detail, fetch_catalog_list, fetch_genres_and_seasons, fetch_home_page,
@@ -47,6 +47,9 @@ const JSON_CACHE_MAX_ENTRIES: usize = 512;
 /// Each stream is stored under two keys and carries the playlist twice (plain and as a data URI).
 const STREAM_CACHE_MAX_ENTRIES: usize = 128;
 const BANNER_RETRY_DELAY: Duration = Duration::from_secs(600);
+const HDX_PART_CACHE_MAX_BYTES: usize = 48 * 1024 * 1024;
+const HDX_PART_CACHE_TTL: Duration = Duration::from_secs(600);
+const HDX_OPEN_RANGE_WINDOW: u64 = HDX_CHUNK * 2;
 
 fn percent_decode(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
@@ -800,7 +803,7 @@ fn hdx_params_ok(origin: &str, path: &str, size: u64, chunk: u64) -> bool {
 }
 
 /// The inclusive byte span a `Range` header asks for, or the whole file when it has none.
-fn parse_byte_range(header: Option<&str>, size: u64) -> Option<(u64, u64)> {
+fn parse_byte_range(header: Option<&str>, size: u64, open_window: u64) -> Option<(u64, u64)> {
     let Some(header) = header else {
         return Some((0, size - 1));
     };
@@ -811,7 +814,9 @@ fn parse_byte_range(header: Option<&str>, size: u64) -> Option<(u64, u64)> {
         return None;
     }
     let end = if last.trim().is_empty() {
-        size - 1
+        start
+            .saturating_add(open_window.saturating_sub(1))
+            .min(size - 1)
     } else {
         last.trim().parse::<u64>().ok()?.min(size - 1)
     };
@@ -827,7 +832,9 @@ fn handle_hdx_proxy(
     query: &str,
     range_header: Option<&str>,
     head_only: bool,
+    hdx_cache: Arc<HdxPartCache>,
 ) {
+    let _ = stream.set_nodelay(true);
     let (Some(origin), Some(path), Some(size), Some(chunk)) = (
         parse_query_param(query, "o"),
         parse_query_param(query, "pa"),
@@ -849,7 +856,7 @@ fn handle_hdx_proxy(
         );
         return;
     }
-    let Some((start, end)) = parse_byte_range(range_header, size) else {
+    let Some((start, end)) = parse_byte_range(range_header, size, HDX_OPEN_RANGE_WINDOW) else {
         let header = format!(
             "HTTP/1.1 416 Range Not Satisfiable\r\n\
              Content-Range: bytes */{size}\r\n\
@@ -865,7 +872,7 @@ fn handle_hdx_proxy(
          Content-Length: {}\r\n\
          Content-Range: bytes {start}-{end}/{size}\r\n\
          Accept-Ranges: bytes\r\n\
-         Cache-Control: no-store\r\n\
+         Cache-Control: public, max-age=3600\r\n\
          Access-Control-Allow-Origin: *\r\n\
          Cross-Origin-Resource-Policy: cross-origin\r\n\
          Connection: close\r\n\r\n",
@@ -878,7 +885,6 @@ fn handle_hdx_proxy(
         let _ = stream.flush();
         return;
     }
-    let agent = sora_agent();
     let last_part = (size - 1) / chunk;
     let mut part = start / chunk;
     loop {
@@ -886,16 +892,21 @@ fn handle_hdx_proxy(
         if part_start > end {
             break;
         }
-        let bytes = match fetch_sora_part(&agent, &origin, &path, size, part) {
+        let bytes = match hdx_cache.get_or_fetch(&origin, &path, size, part) {
             Ok(bytes) => bytes,
             // The head is already sent, so a failure can only drop the connection.
             Err(_) => return,
         };
+        if part < last_part {
+            hdx_cache.prefetch(origin.clone(), path.clone(), size, part + 1);
+        }
         let from = (start.max(part_start) - part_start) as usize;
         let to = ((end + 1).min(part_start + bytes.len() as u64) - part_start) as usize;
         if from < to && from < bytes.len() {
-            if stream.write_all(&bytes[from..to.min(bytes.len())]).is_err() {
-                return;
+            for slice in bytes[from..to.min(bytes.len())].chunks(65_536) {
+                if stream.write_all(slice).is_err() {
+                    return;
+                }
             }
         }
         if part >= last_part {
@@ -1374,6 +1385,7 @@ fn handle_client(
     banner_tx: Sender<Vec<String>>,
     web_root: Option<PathBuf>,
     account_state: AccountState,
+    hdx_cache: Arc<HdxPartCache>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
@@ -1655,7 +1667,13 @@ fn handle_client(
             }
         }
         "/api/hdx" => {
-            handle_hdx_proxy(stream, query, request.header("range"), head_only);
+            handle_hdx_proxy(
+                stream,
+                query,
+                request.header("range"),
+                head_only,
+                hdx_cache,
+            );
         }
         "/api/extract" | "/extract" => {
             let target = parse_query_param(query, "url")
@@ -1760,6 +1778,10 @@ fn run_server(bind_addr: &str) {
     let json_cache: JsonCacheMap = Arc::new(Mutex::new(HashMap::new()));
     let image_cache: ImageCacheMap = Arc::new(Mutex::new(HashMap::new()));
     let banner_cache: BannerCacheMap = Arc::new(Mutex::new(BannerCache::default()));
+    let hdx_cache = Arc::new(HdxPartCache::new(
+        HDX_PART_CACHE_MAX_BYTES,
+        HDX_PART_CACHE_TTL,
+    ));
     let (banner_tx, banner_rx) = mpsc::channel();
     let worker_json_cache = Arc::clone(&json_cache);
     let worker_banner_cache = Arc::clone(&banner_cache);
@@ -1793,8 +1815,9 @@ fn run_server(bind_addr: &str) {
         let bt = banner_tx.clone();
         let root = web_root.clone();
         let accounts = account_state.clone();
+        let hc = Arc::clone(&hdx_cache);
         thread::spawn(move || {
-            handle_client(stream, sc, jc, ic, bc, bt, root, accounts);
+            handle_client(stream, sc, jc, ic, bc, bt, root, accounts, hc);
         });
     }
 }
@@ -1864,6 +1887,34 @@ mod tests {
         ] {
             assert_eq!(map_error_status_and_message(&format!("{prefix}: lỗi")), (status, "lỗi"));
         }
+    }
+
+    #[test]
+    fn byte_ranges_window_open_ended_requests() {
+        assert_eq!(
+            parse_byte_range(Some("bytes=0-"), 10_000_000, 4_194_304),
+            Some((0, 4_194_303))
+        );
+        assert_eq!(
+            parse_byte_range(Some("bytes=9999999-"), 10_000_000, 4_194_304),
+            Some((9_999_999, 9_999_999))
+        );
+        assert_eq!(
+            parse_byte_range(Some("bytes=0-10000000"), 20_000_000, 4_194_304),
+            Some((0, 10_000_000))
+        );
+        assert_eq!(
+            parse_byte_range(None, 20_000_000, 4_194_304),
+            Some((0, 19_999_999))
+        );
+        assert_eq!(
+            parse_byte_range(Some("bytes=20-"), 20, 4_194_304),
+            None
+        );
+        assert_eq!(
+            parse_byte_range(Some("bytes=100-99"), 200, 4_194_304),
+            None
+        );
     }
 
     fn test_root() -> PathBuf {

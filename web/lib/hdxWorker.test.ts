@@ -14,6 +14,18 @@ interface WorkerHooks {
   partUrl(url: string, part: number): string;
   unscramble(chunk: Uint8Array, offset: number, keystream: Uint8Array): Uint8Array;
   looksLikeMp4(head: Uint8Array): boolean;
+  resolveRange(
+    rangeHeader: string | null,
+    size: number,
+    maxOpenRange?: number,
+  ): { start: number; end: number } | null;
+  createHeadTransform(options: {
+    start: number;
+    head: number;
+    keystreamPromise: Promise<Uint8Array>;
+    scrambled: boolean | null;
+    onDetected: (value: boolean) => void;
+  }): TransformStream<Uint8Array, Uint8Array>;
 }
 
 /** Runs the worker file the way a browser would, with just enough of a worker scope. */
@@ -21,6 +33,8 @@ function loadWorker(): WorkerHooks {
   const scope: Record<string, unknown> = {
     addEventListener() {},
     location: { origin: "https://phim.example" },
+    ReadableStream,
+    TransformStream,
   };
   scope.self = scope;
   const source = readFileSync(new URL("../public/hdx-sw.js", import.meta.url), "utf8");
@@ -58,6 +72,71 @@ test("a request is answered from the one part that holds its first byte", () => 
   assert.equal(hdx.partUrl("https://cdn.example/f.5", 1), "https://cdn.example/f.51");
 });
 
+test("open-ended ranges are capped without changing explicit ranges", () => {
+  assert.deepEqual({ ...hdx.resolveRange("bytes=0-", 10 * 1024 * 1024) }, {
+    start: 0,
+    end: 4 * 1024 * 1024 - 1,
+  });
+  assert.deepEqual({ ...hdx.resolveRange("bytes=8-", 10) }, { start: 8, end: 9 });
+  assert.deepEqual({ ...hdx.resolveRange("bytes=0-5000000", 10 * 1024 * 1024) }, {
+    start: 0,
+    end: 5000000,
+  });
+  assert.equal(hdx.resolveRange("bytes=10-", 10), null);
+  assert.equal(hdx.resolveRange("bytes=8-3", 10), null);
+});
+
+test("head detection handles split chunks for scrambled and plain MP4 data", async () => {
+  const head = 16;
+  const plain = new Uint8Array([
+    0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70,
+    1, 2, 3, 4, 5, 6, 7, 8,
+    9, 10, 11, 12, 13, 14, 15, 16,
+  ]);
+  const keystream = new Uint8Array(head);
+  for (let i = 0; i < keystream.length; i += 1) keystream[i] = (i * 17 + 3) & 0xff;
+  const scrambled = new Uint8Array(plain);
+  hdx.unscramble(scrambled, 0, keystream);
+
+  async function run(chunks: Uint8Array[], expected: boolean) {
+    const detected: boolean[] = [];
+    const input = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const output = input.pipeThrough(
+      hdx.createHeadTransform({
+        start: 0,
+        head,
+        keystreamPromise: Promise.resolve(keystream),
+        scrambled: null,
+        onDetected(value) {
+          detected.push(value);
+        },
+      }),
+    );
+    const reader = output.getReader();
+    const result: Uint8Array[] = [];
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      result.push(next.value);
+    }
+    const bytes = new Uint8Array(result.reduce((total, chunk) => total + chunk.length, 0));
+    let offset = 0;
+    for (const chunk of result) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    assert.deepEqual(bytes, plain);
+    assert.deepEqual(detected, [expected]);
+  }
+
+  await run([scrambled.slice(0, 3), scrambled.slice(3, 8), scrambled.slice(8)], true);
+  await run([plain.slice(0, 3), plain.slice(3, 8), plain.slice(8)], false);
+});
 test("the scrambled head comes back as the bytes the player decrypts", () => {
   const head = 65536;
   const key = createHash("md5").update("ad14fc01f0c8fc4439df1fad8afae.131941583.3").digest("hex");

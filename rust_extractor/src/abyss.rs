@@ -10,8 +10,12 @@ use aes::cipher::{KeyIvInit, StreamCipher};
 use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
 use md5::{Digest, Md5};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::io::Read;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
 
@@ -69,12 +73,247 @@ pub fn sora_token(path: &str, part: u64, size: u64) -> String {
 }
 
 /// An HTTP client for reading parts, so one request reuses its connection to the host.
-pub fn sora_agent() -> ureq::Agent {
+static SORA_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::AgentBuilder::new()
         .user_agent(DEFAULT_UA)
         .timeout_connect(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(20))
+        .max_idle_connections(64)
+        .max_idle_connections_per_host(16)
         .build()
+});
+
+pub fn shared_sora_agent() -> &'static ureq::Agent {
+    &SORA_AGENT
+}
+
+type Flight = (Mutex<Option<Result<Arc<Vec<u8>>, String>>>, Condvar);
+
+struct CacheEntry {
+    bytes: Arc<Vec<u8>>,
+    last_used: Instant,
+    inserted_at: Instant,
+}
+
+struct CacheState {
+    entries: HashMap<String, CacheEntry>,
+    in_flight: HashMap<String, Arc<Flight>>,
+    total_bytes: usize,
+}
+
+/// Bounded, expiring cache for HDX parts with single-flight fetch deduplication.
+pub struct HdxPartCache {
+    state: Mutex<CacheState>,
+    max_bytes: usize,
+    ttl: Duration,
+    active_prefetches: AtomicUsize,
+}
+
+impl HdxPartCache {
+    pub fn new(max_bytes: usize, ttl: Duration) -> Self {
+        Self {
+            state: Mutex::new(CacheState {
+                entries: HashMap::new(),
+                in_flight: HashMap::new(),
+                total_bytes: 0,
+            }),
+            max_bytes,
+            ttl,
+            active_prefetches: AtomicUsize::new(0),
+        }
+    }
+
+    fn remove_expired(&self, state: &mut CacheState, now: Instant) {
+        let ttl = self.ttl;
+        let mut expired = Vec::new();
+        for (key, entry) in &state.entries {
+            if now.duration_since(entry.inserted_at) >= ttl {
+                expired.push(key.clone());
+            }
+        }
+        for key in expired {
+            if let Some(entry) = state.entries.remove(&key) {
+                state.total_bytes = state.total_bytes.saturating_sub(entry.bytes.len());
+            }
+        }
+    }
+
+    fn cache_insert(&self, state: &mut CacheState, key: String, bytes: Arc<Vec<u8>>, now: Instant) {
+        let incoming_len = bytes.len();
+        if incoming_len > self.max_bytes {
+            return;
+        }
+        self.remove_expired(state, now);
+        if let Some(previous) = state.entries.remove(&key) {
+            state.total_bytes = state.total_bytes.saturating_sub(previous.bytes.len());
+        }
+        while state.total_bytes + incoming_len > self.max_bytes {
+            let Some(oldest_key) = state
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(oldest) = state.entries.remove(&oldest_key) {
+                state.total_bytes = state.total_bytes.saturating_sub(oldest.bytes.len());
+            }
+        }
+        state.total_bytes += incoming_len;
+        state.entries.insert(
+            key,
+            CacheEntry {
+                bytes,
+                last_used: now,
+                inserted_at: now,
+            },
+        );
+    }
+
+    pub fn get_or_fetch_with<F>(&self, key: &str, fetcher: F) -> Result<Arc<Vec<u8>>, String>
+    where
+        F: FnOnce() -> Result<Vec<u8>, String>,
+    {
+        let now = Instant::now();
+        let (slot, leader) = {
+            let mut state = self.state.lock().unwrap();
+            self.remove_expired(&mut state, now);
+            if let Some(entry) = state.entries.get_mut(key) {
+                entry.last_used = now;
+                return Ok(Arc::clone(&entry.bytes));
+            }
+            if let Some(slot) = state.in_flight.get(key) {
+                (Arc::clone(slot), false)
+            } else {
+                let slot = Arc::new((Mutex::new(None), Condvar::new()));
+                state.in_flight.insert(key.to_string(), Arc::clone(&slot));
+                (slot, true)
+            }
+        };
+
+        if !leader {
+            let (result, condvar) = (&slot.0, &slot.1);
+            let mut result = result.lock().unwrap();
+            while result.is_none() {
+                result = condvar.wait(result).unwrap();
+            }
+            return result.as_ref().cloned().unwrap();
+        }
+
+        let mut cleanup = InFlightGuard {
+            cache: self,
+            key: key.to_string(),
+            slot: Arc::clone(&slot),
+            completed: false,
+        };
+        let result = fetcher().map(Arc::new);
+        let mut state = self.state.lock().unwrap();
+        state.in_flight.remove(key);
+        if let Ok(bytes) = &result {
+            self.cache_insert(&mut state, key.to_string(), Arc::clone(bytes), Instant::now());
+        }
+        {
+            let mut slot_result = slot.0.lock().unwrap();
+            *slot_result = Some(result.clone());
+            slot.1.notify_all();
+        }
+        cleanup.completed = true;
+        result
+    }
+
+    pub fn get_or_fetch(
+        &self,
+        origin: &str,
+        path: &str,
+        size: u64,
+        part: u64,
+    ) -> Result<Arc<Vec<u8>>, String> {
+        let key = format!("{origin}|{path}|{size}|{part}");
+        self.get_or_fetch_with(&key, || {
+            fetch_sora_part(shared_sora_agent(), origin, path, size, part)
+        })
+    }
+
+    pub fn prefetch(self: &Arc<Self>, origin: String, path: String, size: u64, part: u64) {
+        let key = format!("{origin}|{path}|{size}|{part}");
+        {
+            let mut state = self.state.lock().unwrap();
+            self.remove_expired(&mut state, Instant::now());
+            if state.entries.contains_key(&key) || state.in_flight.contains_key(&key) {
+                return;
+            }
+        }
+        loop {
+            let active = self.active_prefetches.load(Ordering::Acquire);
+            if active >= 4 {
+                return;
+            }
+            if self
+                .active_prefetches
+                .compare_exchange(active, active + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        let cache = Arc::clone(self);
+        let spawn = thread::Builder::new().spawn(move || {
+            struct PrefetchGuard<'a>(&'a AtomicUsize);
+            impl Drop for PrefetchGuard<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+            let _guard = PrefetchGuard(&cache.active_prefetches);
+            let _ = cache.get_or_fetch(&origin, &path, size, part);
+        });
+        if spawn.is_err() {
+            self.active_prefetches.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    pub fn stats(&self) -> (usize, usize) {
+        let mut state = self.state.lock().unwrap();
+        self.remove_expired(&mut state, Instant::now());
+        (state.entries.len(), state.total_bytes)
+    }
+}
+
+struct InFlightGuard<'a> {
+    cache: &'a HdxPartCache,
+    key: String,
+    slot: Arc<Flight>,
+    completed: bool,
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let error = "UPSTREAM_DOWN: Yêu cầu phần phim HDX bị gián đoạn".to_string();
+        let mut result = match self.slot.0.lock() {
+            Ok(result) => result,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if result.is_none() {
+            *result = Some(Err(error));
+            self.slot.1.notify_all();
+        }
+        drop(result);
+        let mut state = match self.cache.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if state
+            .in_flight
+            .get(&self.key)
+            .is_some_and(|slot| Arc::ptr_eq(slot, &self.slot))
+        {
+            state.in_flight.remove(&self.key);
+        }
+    }
 }
 
 /// Read one part of a path-addressed file from the storage host.
@@ -89,11 +328,40 @@ pub fn fetch_sora_part(
     part: u64,
 ) -> Result<Vec<u8>, String> {
     let url = format!("{origin}/sora/{size}/{}", sora_token(path, part, size));
-    let resp = agent
-        .get(&url)
-        .set("Referer", "https://abyssplayer.com/")
-        .call()
-        .map_err(|e| format!("UPSTREAM_DOWN: Không tải được phần phim HDX: {e}"))?;
+    let resp = loop {
+        match agent
+            .get(&url)
+            .set("Referer", "https://abyssplayer.com/")
+            .call()
+        {
+            Ok(resp) => break resp,
+            Err(error)
+                if matches!(
+                    error,
+                    ureq::Error::Transport(_) | ureq::Error::Status(500..=599, _)
+                ) =>
+            {
+                thread::sleep(Duration::from_millis(100));
+                match agent
+                    .get(&url)
+                    .set("Referer", "https://abyssplayer.com/")
+                    .call()
+                {
+                    Ok(resp) => break resp,
+                    Err(error) => {
+                        return Err(format!(
+                            "UPSTREAM_DOWN: Không tải được phần phim HDX: {error}"
+                        ))
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "UPSTREAM_DOWN: Không tải được phần phim HDX: {error}"
+                ))
+            }
+        }
+    };
     let mut body = Vec::with_capacity(SORA_CHUNK as usize);
     resp.into_reader()
         .read_to_end(&mut body)
@@ -579,5 +847,71 @@ mod tests {
         );
         assert!(embed_candidates("https://evil.example/abyssplayer.com/x").is_err());
         assert!(embed_candidates("http://abyssplayer.com/x").is_err());
+    }
+
+    #[test]
+    fn part_cache_evicts_lru_entries_within_byte_cap() {
+        let cache = HdxPartCache::new(6, Duration::from_secs(600));
+        let payload = |value| vec![value; 3];
+        cache
+            .get_or_fetch_with("a", || Ok(payload(1)))
+            .expect("cache a");
+        thread::sleep(Duration::from_millis(1));
+        cache
+            .get_or_fetch_with("b", || Ok(payload(2)))
+            .expect("cache b");
+        thread::sleep(Duration::from_millis(1));
+        let _ = cache.get_or_fetch_with("a", || panic!("a should be cached"));
+        thread::sleep(Duration::from_millis(1));
+        cache
+            .get_or_fetch_with("c", || Ok(payload(3)))
+            .expect("cache c");
+        assert_eq!(cache.stats(), (2, 6));
+        assert_eq!(
+            &*cache
+                .get_or_fetch_with("a", || panic!("a should remain"))
+                .unwrap(),
+            &[1, 1, 1]
+        );
+        assert_eq!(
+            &*cache
+                .get_or_fetch_with("c", || panic!("c should remain"))
+                .unwrap(),
+            &[3, 3, 3]
+        );
+        assert_eq!(
+            cache
+                .get_or_fetch_with("b", || Ok(payload(4)))
+                .unwrap()
+                .as_slice(),
+            &[4, 4, 4]
+        );
+    }
+
+    #[test]
+    fn part_cache_single_flight_fetches_once() {
+        let cache = Arc::new(HdxPartCache::new(1024, Duration::from_secs(600)));
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let cache = Arc::clone(&cache);
+            let barrier = Arc::clone(&barrier);
+            let fetches = Arc::clone(&fetches);
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                cache
+                    .get_or_fetch_with("same", || {
+                        fetches.fetch_add(1, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(40));
+                        Ok(vec![7, 8, 9])
+                    })
+                    .unwrap()
+            }));
+        }
+        for worker in workers {
+            assert_eq!(&*worker.join().unwrap(), &[7, 8, 9]);
+        }
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
     }
 }

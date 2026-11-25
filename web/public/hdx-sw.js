@@ -13,6 +13,18 @@ const MEDIA_PREFIX = "/hdx/";
 const MEDIA_REFERRER = "/hdx/abyssplayer.com/";
 const KEY_PATTERN = /^[0-9a-f]{32}$/;
 const RANGE_PATTERN = /^bytes=(\d+)-(\d*)$/;
+const MAX_OPEN_RANGE = 4 * 1024 * 1024;
+
+function resolveRange(rangeHeader, size, maxOpenRange = MAX_OPEN_RANGE) {
+  const requested = RANGE_PATTERN.exec(rangeHeader || "bytes=0-");
+  if (!requested) return null;
+  const start = Number(requested[1]);
+  if (start >= size) return null;
+  const end = requested[2]
+    ? Math.min(Number(requested[2]), size - 1)
+    : Math.min(start + maxOpenRange - 1, size - 1);
+  return end < start ? null : { start, end };
+}
 
 /** Which stretch of which part answers one request. */
 function planRequest(start, end, size, partSize) {
@@ -58,6 +70,13 @@ function looksLikeMp4(head) {
 const keystreams = new Map();
 const plainFiles = new Map();
 
+function setBounded(map, key, value, limit = 64) {
+  if (map.has(key)) map.delete(key);
+  else if (map.size >= limit) map.delete(map.keys().next().value);
+  map.set(key, value);
+  return value;
+}
+
 function keystreamFor(keyHex, length) {
   let pending = keystreams.get(keyHex);
   if (!pending) {
@@ -75,7 +94,7 @@ function keystreamFor(keyHex, length) {
       );
       return new Uint8Array(out);
     })();
-    keystreams.set(keyHex, pending);
+    setBounded(keystreams, keyHex, pending);
   }
   return pending;
 }
@@ -91,21 +110,158 @@ function fetchPart(url, rangeStart, rangeEnd, signal) {
   });
 }
 
-/** Whether the first part of this file is scrambled at all. */
-async function isScrambled(url) {
+async function fetchPartWithRetry(url, rangeStart, rangeEnd, signal) {
+  let response;
+  try {
+    response = await fetchPart(url, rangeStart, rangeEnd, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return fetchPart(url, rangeStart, rangeEnd, signal);
+  }
+  if (response.status < 500 || signal?.aborted) return response;
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The retry is still useful if the failed response cannot be cancelled.
+  }
+  return fetchPart(url, rangeStart, rangeEnd, signal);
+}
+
+function createHeadTransform({ start, head, keystreamPromise, scrambled, onDetected }) {
+  let state = scrambled;
+  let offset = start;
+  let key;
+  let buffered = [];
+  let bufferedLength = 0;
+  const pendingKeystream = keystreamPromise || Promise.resolve(new Uint8Array());
+
+  async function processChunk(chunk, target) {
+    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    const headLength = state === true ? Math.max(0, Math.min(bytes.length, head - offset)) : 0;
+    if (headLength === 0) {
+      target.enqueue(chunk);
+    } else {
+      key = key || (await pendingKeystream);
+      const copy = new Uint8Array(headLength);
+      copy.set(bytes.subarray(0, headLength));
+      unscramble(copy, offset, key);
+      target.enqueue(copy);
+      if (headLength < bytes.length) target.enqueue(bytes.subarray(headLength));
+    }
+    offset += bytes.length;
+  }
+
+  async function detect(target) {
+    const original = buffered;
+    const probe = new Uint8Array(Math.min(bufferedLength, 8));
+    let probeOffset = 0;
+    for (const chunk of original) {
+      const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      const copied = Math.min(bytes.length, probe.length - probeOffset);
+      probe.set(bytes.subarray(0, copied), probeOffset);
+      probeOffset += copied;
+      if (probeOffset === probe.length) break;
+    }
+    state = !looksLikeMp4(probe);
+    if (onDetected && probe.length >= 8) onDetected(state);
+    buffered = [];
+    bufferedLength = 0;
+    for (const chunk of original) await processChunk(chunk, target);
+  }
+
+  return new TransformStream({
+    async transform(chunk, target) {
+      if (state === null) {
+        buffered.push(chunk);
+        bufferedLength += chunk.byteLength ?? chunk.length;
+        if (bufferedLength < 8) return;
+        await detect(target);
+        return;
+      }
+      await processChunk(chunk, target);
+    },
+    async flush(target) {
+      if (state === null) await detect(target);
+    },
+  });
+}
+
+async function isScrambled(url, signal) {
   let pending = plainFiles.get(url);
   if (!pending) {
     pending = (async () => {
-      const response = await fetchPart(url, 0, 7);
+      const response = await fetchPartWithRetry(url, 0, 7, signal);
       if (!response.ok) return true;
       return !looksLikeMp4(new Uint8Array(await response.arrayBuffer()));
     })();
-    plainFiles.set(url, pending);
+    setBounded(plainFiles, url, pending);
+    pending.then(
+      (value) => {
+        if (plainFiles.get(url) === pending) pending.resolved = value;
+      },
+      () => {},
+    );
   }
+  try {
+    return await pending;
+  } catch (error) {
+    if (plainFiles.get(url) === pending) plainFiles.delete(url);
+    throw error;
+  }
+}
+
+function cacheScrambledResult(url, value) {
+  const pending = Promise.resolve(value);
+  pending.resolved = value;
+  setBounded(plainFiles, url, pending);
   return pending;
 }
 
+function wrapBody(body, controller, removeRequestAbort) {
+  const reader = body.getReader();
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    removeRequestAbort();
+  };
+  return new ReadableStream({
+    async pull(target) {
+      try {
+        const result = await reader.read();
+        if (result.done) {
+          cleanup();
+          target.close();
+        } else {
+          target.enqueue(result.value);
+        }
+      } catch (error) {
+        controller.abort();
+        cleanup();
+        target.error(error);
+      }
+    },
+    async cancel(reason) {
+      controller.abort();
+      cleanup();
+      await reader.cancel(reason);
+    },
+  });
+}
+
 async function serve(request, url) {
+  const controller = new AbortController();
+  let removeRequestAbort = () => {};
+  if (request.signal) {
+    if (request.signal.aborted) {
+      controller.abort();
+      return new Response(null, { status: 499 });
+    }
+    const onAbort = () => controller.abort();
+    request.signal.addEventListener("abort", onAbort, { once: true });
+    removeRequestAbort = () => request.signal.removeEventListener("abort", onAbort);
+  }
+
   const media = url.searchParams.get("u");
   const size = Number(url.searchParams.get("s"));
   const partSize = Number(url.searchParams.get("p"));
@@ -122,47 +278,84 @@ async function serve(request, url) {
     KEY_PATTERN.test(key || "") &&
     Number.isSafeInteger(head) &&
     head > 0;
-  if (!valid) return new Response(null, { status: 400 });
-
-  const requested = RANGE_PATTERN.exec(request.headers.get("range") || "bytes=0-");
-  if (!requested) return new Response(null, { status: 416 });
-  const start = Number(requested[1]);
-  if (start >= size) {
-    return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
+  if (!valid) {
+    removeRequestAbort();
+    return new Response(null, { status: 400 });
   }
-  const end = requested[2] ? Math.min(Number(requested[2]), size - 1) : size - 1;
-  if (end < start) return new Response(null, { status: 416 });
 
+  const range = resolveRange(request.headers.get("range"), size);
+  if (!range) {
+    removeRequestAbort();
+    const requested = RANGE_PATTERN.exec(request.headers.get("range") || "");
+    const headers = requested && Number(requested[1]) >= size
+      ? { "Content-Range": `bytes */${size}` }
+      : undefined;
+    return new Response(null, { status: 416, headers });
+  }
+
+  const { start, end } = range;
   const plan = planRequest(start, end, size, partSize);
-  const controller = new AbortController();
-  const response = await fetchPart(
-    partUrl(media, plan.part),
+  const sourceUrl = partUrl(media, plan.part);
+  const keystreamPromise =
+    plan.part === 0 && start < head ? keystreamFor(key, head) : null;
+  let scrambled = null;
+  let fetchPromise = fetchPartWithRetry(
+    sourceUrl,
     plan.upstreamStart,
     plan.upstreamEnd,
     controller.signal,
   );
+  try {
+    if (plan.part === 0 && start > 0 && start < head) {
+      const detectionPromise = isScrambled(media, controller.signal);
+      [fetchPromise, scrambled] = await Promise.all([fetchPromise, detectionPromise]);
+    } else if (plan.part === 0 && start === 0) {
+      const cached = plainFiles.get(media);
+      if (cached && Object.prototype.hasOwnProperty.call(cached, "resolved")) {
+        scrambled = cached.resolved;
+      }
+    }
+  } catch (error) {
+    controller.abort();
+    removeRequestAbort();
+    throw error;
+  }
+
+  let response;
+  try {
+    response = await fetchPromise;
+  } catch (error) {
+    controller.abort();
+    removeRequestAbort();
+    throw error;
+  }
   if (response.status !== 206 || !response.body) {
+    await response.body?.cancel();
+    removeRequestAbort();
     return new Response(null, { status: 502 });
   }
 
   let body = response.body;
-  if (plan.part === 0 && start < head && (await isScrambled(media))) {
-    const keystream = await keystreamFor(key, head);
-    let offset = start;
-    body = body.pipeThrough(
-      new TransformStream({
-        transform(chunk, target) {
-          if (offset < head) {
-            const copy = new Uint8Array(chunk);
-            unscramble(copy, offset, keystream);
-            chunk = copy;
-          }
-          offset += chunk.length;
-          target.enqueue(chunk);
-        },
-      }),
-    );
+  if (plan.part === 0 && start < head) {
+    if (scrambled === null) {
+      body = body.pipeThrough(
+        createHeadTransform({
+          start,
+          head,
+          keystreamPromise,
+          scrambled: null,
+          onDetected(value) {
+            cacheScrambledResult(media, value);
+          },
+        }),
+      );
+    } else if (scrambled) {
+      body = body.pipeThrough(
+        createHeadTransform({ start, head, keystreamPromise, scrambled, onDetected: null }),
+      );
+    }
   }
+  body = wrapBody(body, controller, removeRequestAbort);
 
   return new Response(body, {
     status: 206,
@@ -171,7 +364,7 @@ async function serve(request, url) {
       "Content-Range": `bytes ${start}-${plan.end}/${size}`,
       "Content-Length": String(plan.end - start + 1),
       "Accept-Ranges": "bytes",
-      "Cache-Control": "no-store",
+      "Cache-Control": "private, max-age=3600",
       "X-Content-Type-Options": "nosniff",
     },
   });
@@ -213,4 +406,11 @@ self.addEventListener("fetch", (event) => {
 });
 
 // The parts a test can reach without a browser.
-self.__hdx = { planRequest, partUrl, unscramble, looksLikeMp4 };
+self.__hdx = {
+  planRequest,
+  partUrl,
+  unscramble,
+  looksLikeMp4,
+  resolveRange,
+  createHeadTransform,
+};
