@@ -10,6 +10,7 @@ use aes::cipher::{KeyIvInit, StreamCipher};
 use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
 use md5::{Digest, Md5};
 use serde_json::{json, Map, Value};
+use std::io::Read;
 use std::time::Duration;
 
 type Aes256Ctr = ctr::Ctr128BE<aes::Aes256>;
@@ -37,6 +38,67 @@ pub fn md5_hex(input: &str) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+/// The key the player signs its chunk tokens with for a path-addressed file.
+///
+/// It hashes the size's decimal digits as raw byte values, not their text, which is how the
+/// player's own hash coerces the number before signing.
+pub fn size_token_key(size: u64) -> String {
+    let digits: Vec<u8> = size.to_string().bytes().map(|b| b - b'0').collect();
+    let digest = Md5::digest(&digits);
+    let mut out = String::with_capacity(32);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// The signed token the storage host wants for one part of a path-addressed file.
+///
+/// It is the part's path encrypted with AES-CTR under the size key, then written as base64
+/// twice with the padding dropped, exactly as the backup server's own player does.
+pub fn sora_token(path: &str, part: u64, size: u64) -> String {
+    let key = size_token_key(size);
+    let mut data = format!("{path}/{part}").into_bytes();
+    let mut cipher = Aes256Ctr::new(key.as_bytes().into(), key.as_bytes()[..16].into());
+    cipher.apply_keystream(&mut data);
+    let inner = B64_STD.encode(&data);
+    let inner = inner.trim_end_matches('=');
+    B64_STD.encode(inner).trim_end_matches('=').to_string()
+}
+
+/// An HTTP client for reading parts, so one request reuses its connection to the host.
+pub fn sora_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .user_agent(DEFAULT_UA)
+        .timeout_connect(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+}
+
+/// Read one part of a path-addressed file from the storage host.
+///
+/// The host serves `/sora/` only to requests that carry no browser `Origin` header, so the
+/// engine fetches it: a plain HTTP client sends none. The whole part comes back at once.
+pub fn fetch_sora_part(
+    agent: &ureq::Agent,
+    origin: &str,
+    path: &str,
+    size: u64,
+    part: u64,
+) -> Result<Vec<u8>, String> {
+    let url = format!("{origin}/sora/{size}/{}", sora_token(path, part, size));
+    let resp = agent
+        .get(&url)
+        .set("Referer", "https://abyssplayer.com/")
+        .call()
+        .map_err(|e| format!("UPSTREAM_DOWN: Không tải được phần phim HDX: {e}"))?;
+    let mut body = Vec::with_capacity(SORA_CHUNK as usize);
+    resp.into_reader()
+        .read_to_end(&mut body)
+        .map_err(|e| format!("UPSTREAM_DOWN: Đọc phần phim HDX lỗi: {e}"))?;
+    Ok(body)
 }
 
 /// Decrypt what the embed page hands its player: AES-256-CTR with the key written as
@@ -144,33 +206,29 @@ fn height_of(label: &str) -> u64 {
     digits.parse().unwrap_or(0)
 }
 
+/// The parts a path-addressed file is cut into, in bytes; the player uses this size too.
+const SORA_CHUNK: u64 = 2_097_152;
+
 /// Turn the decrypted file description into this engine's own source list.
-pub fn shape_sources(media: &Value) -> Vec<Value> {
+///
+/// The backup server stores a film in one of two ways. The older way names a whole file by
+/// URL whose first bytes are scrambled. The newer way gives only a storage host and ids, and
+/// the file is read part by part from a `/sora/` path whose token this engine signs for the
+/// browser (the browser has no MD5 to sign it itself). Both end up as one source per quality.
+pub fn shape_sources(media: &Value, md5_id: &str) -> Vec<Value> {
     let mut sources: Vec<(u64, Value)> = Vec::new();
-    let entries = media
-        .get("mp4")
+    let mp4 = media.get("mp4");
+    let entries = mp4
         .and_then(|mp4| mp4.get("sources"))
+        .and_then(Value::as_array);
+    let domains = mp4
+        .and_then(|mp4| mp4.get("domains"))
         .and_then(Value::as_array);
     for entry in entries.into_iter().flatten() {
         if entry.get("status").and_then(Value::as_bool) != Some(true) {
             continue;
         }
-        let (Some(base), Some(path), Some(size)) = (
-            entry.get("url").and_then(Value::as_str),
-            entry.get("path").and_then(Value::as_str),
-            entry.get("size").and_then(Value::as_u64),
-        ) else {
-            continue;
-        };
-        if !base.starts_with("https://") || size == 0 {
-            continue;
-        }
-        let url = format!(
-            "{}/{}",
-            base.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        );
-        let Some(file_name) = url.rsplit('/').next().filter(|name| !name.is_empty()) else {
+        let Some(size) = entry.get("size").and_then(Value::as_u64).filter(|s| *s > 0) else {
             continue;
         };
         let label = entry
@@ -178,43 +236,70 @@ pub fn shape_sources(media: &Value) -> Vec<Value> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        // A part size of zero means the file is whole.
-        let part_size = match entry.get("partSize").and_then(Value::as_u64) {
-            Some(value) if value > 0 && value < size => value,
-            _ => size,
-        };
         let height = height_of(&label);
-        sources.push((
-            height,
-            json!({
-                "label": label,
-                "height": height,
-                "codec": entry.get("codec").and_then(Value::as_str).unwrap_or("h264"),
-                "size": size,
-                "part_size": part_size,
-                "url": url,
-                "key": md5_hex(file_name),
-                "encrypted_head": ENCRYPTED_HEAD,
-            }),
-        ));
+        let codec = entry.get("codec").and_then(Value::as_str).unwrap_or("h264");
+        if let (Some(base), Some(path)) = (
+            entry.get("url").and_then(Value::as_str),
+            entry.get("path").and_then(Value::as_str),
+        ) {
+            if !base.starts_with("https://") {
+                continue;
+            }
+            let url = format!(
+                "{}/{}",
+                base.trim_end_matches('/'),
+                path.trim_start_matches('/')
+            );
+            let Some(file_name) = url.rsplit('/').next().filter(|name| !name.is_empty()) else {
+                continue;
+            };
+            // A part size of zero means the file is whole.
+            let part_size = match entry.get("partSize").and_then(Value::as_u64) {
+                Some(value) if value > 0 && value < size => value,
+                _ => size,
+            };
+            sources.push((
+                height,
+                json!({
+                    "label": label, "height": height, "codec": codec, "size": size,
+                    "part_size": part_size,
+                    "url": url, "key": md5_hex(file_name), "encrypted_head": ENCRYPTED_HEAD,
+                }),
+            ));
+        } else if let (Some(sub), Some(res_id), Some(domains)) = (
+            entry.get("sub").and_then(Value::as_str),
+            entry.get("res_id").and_then(Value::as_u64),
+            domains.filter(|list| !list.is_empty()),
+        ) {
+            let host = domains
+                .iter()
+                .filter_map(Value::as_str)
+                .find(|domain| domain.contains(sub))
+                .or_else(|| domains[size as usize % domains.len()].as_str());
+            let Some(host) = host else {
+                continue;
+            };
+            // The storage host only serves /sora/ to its own player's origin, which a browser
+            // on this site cannot present. So the file is read back through the engine, which
+            // signs each part's token and asks the host without a browser's Origin header.
+            let origin = format!("https://{host}");
+            let path = format!("/mp4/{md5_id}/{res_id}/{size}/{SORA_CHUNK}");
+            let proxy = format!(
+                "/api/hdx?o={}&pa={}&s={size}&p={SORA_CHUNK}",
+                url_encode(&origin),
+                url_encode(&path),
+            );
+            sources.push((
+                height,
+                json!({
+                    "label": label, "height": height, "codec": codec, "size": size,
+                    "proxy": proxy,
+                }),
+            ));
+        }
     }
     sources.sort_by(|left, right| right.0.cmp(&left.0));
     sources.into_iter().map(|(_, source)| source).collect()
-}
-
-/// Whether the backup server offered a file for this episode that this engine cannot read.
-///
-/// Some episodes are stored in a newer, path-addressed form the player fetches through its
-/// own worker with a per-chunk signed token. We do not reproduce that, so an episode served
-/// only that way is a source that exists but is unplayable here, not a missing one.
-fn has_unsupported_source(media: &Value) -> bool {
-    media
-        .get("mp4")
-        .and_then(|mp4| mp4.get("sources"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .any(|entry| entry.get("status").and_then(Value::as_bool) == Some(true))
 }
 
 fn ajax_player(form: &str) -> Result<Map<String, Value>, String> {
@@ -331,18 +416,24 @@ pub fn hdx_sources(input: &str) -> Result<Value, String> {
                 continue;
             }
         };
-        let payload = match decode_embed_payload(&html).and_then(|payload| decode_media(&payload)) {
+        let payload = match decode_embed_payload(&html) {
             Ok(value) => value,
             Err(error) => {
                 last = error;
                 continue;
             }
         };
-        let sources = shape_sources(&payload);
-        if sources.is_empty() {
-            if has_unsupported_source(&payload) {
-                last = "UNAVAILABLE: Tập này hiện chỉ phát được trên máy chủ chính đang gặp sự cố. Thử lại sau ít phút.".into();
+        let media = match decode_media(&payload) {
+            Ok(value) => value,
+            Err(error) => {
+                last = error;
+                continue;
             }
+        };
+        // The path-addressed form signs its tokens with a key derived from the film id.
+        let md5_id = scalar_text(payload.get("md5_id")).unwrap_or_default();
+        let sources = shape_sources(&media, &md5_id);
+        if sources.is_empty() {
             continue;
         }
         return Ok(json!({
@@ -417,18 +508,32 @@ mod tests {
     }
 
     #[test]
-    fn a_path_addressed_source_is_seen_as_unsupported_not_missing() {
-        // The newer form carries only sub/res_id/size, no url or path.
+    fn the_token_matches_the_one_the_storage_host_accepts() {
+        // Captured from the real player and verified to return 200 from the storage host.
+        assert_eq!(
+            size_token_key(253594379),
+            "b4b056630031d54e7abb3c9606292557"
+        );
+        assert_eq!(
+            sora_token("/mp4/27621160/2/253594379/2097152", 40, 253594379),
+            "MTE5QzhLcnUzQXVqYWtwcm5KVk53c3h6SmRuc3RET3orVzY3MFpvRU9hKzBxUjFB"
+        );
+    }
+
+    #[test]
+    fn a_path_addressed_source_becomes_a_proxied_source() {
+        // The newer form carries only sub/res_id/size; it is read back through the engine.
         let media = json!({"mp4": {"sources": [
             {"label": "360p", "res_id": 2, "size": 253594379, "codec": "h264", "status": true, "sub": "gi7owxbf32"}
-        ], "domains": ["gi7owxbf32.sssrr.org"]}});
-        assert!(shape_sources(&media).is_empty());
-        assert!(has_unsupported_source(&media));
-        // A film with no playable source at all is not called unsupported.
-        let none = json!({"mp4": {"sources": [
-            {"label": "360p", "size": 1, "status": false, "sub": "x"}
-        ]}});
-        assert!(!has_unsupported_source(&none));
+        ], "domains": ["other.sssrr.org", "gi7owxbf32.sssrr.org"]}});
+        let sources = shape_sources(&media, "27621160");
+        assert_eq!(sources.len(), 1);
+        let proxy = sources[0]["proxy"].as_str().unwrap();
+        assert!(proxy.starts_with("/api/hdx?o=https%3A%2F%2Fgi7owxbf32.sssrr.org"));
+        assert!(proxy.contains("pa=%2Fmp4%2F27621160%2F2%2F253594379%2F2097152"));
+        assert!(proxy.contains("s=253594379"));
+        assert!(proxy.contains("p=2097152"));
+        assert!(sources[0].get("url").is_none());
     }
 
     #[test]
@@ -441,7 +546,7 @@ mod tests {
             {"label": "720p", "size": 10, "status": false, "partSize": 0, "codec": "h264",
              "path": "c/720.ts", "url": "https://c.example"}
         ]}});
-        let sources = shape_sources(&media);
+        let sources = shape_sources(&media, "x");
         assert_eq!(sources.len(), 2);
         assert_eq!(sources[0]["label"], "1080p");
         assert_eq!(sources[0]["height"], 1080);

@@ -5,7 +5,7 @@ mod store;
 use accounts::AccountState;
 
 use avs_direct_m3u8::{
-    abyss::hdx_sources,
+    abyss::{fetch_sora_part, hdx_sources, sora_agent},
     build_direct_cdn_m3u8, cdn_host, du_down_for, parent_host,
     scraper::{
         fetch_anime_detail, fetch_catalog_list, fetch_genres_and_seasons, fetch_home_page,
@@ -769,6 +769,143 @@ fn handle_image_proxy(
     send_image_response(stream, "200 OK", &content_type, &body, head_only);
 }
 
+/// The only part size the proxy signs for; it matches what the backup player uses.
+const HDX_CHUNK: u64 = 2_097_152;
+
+/// Whether a proxy request names a real Abyss storage file and nothing else.
+///
+/// The path and host shapes are fixed, so this never lets the proxy fetch an arbitrary URL.
+fn hdx_params_ok(origin: &str, path: &str, size: u64, chunk: u64) -> bool {
+    let Some(host) = origin.strip_prefix("https://") else {
+        return false;
+    };
+    let Some(label) = host.strip_suffix(".sssrr.org") else {
+        return false;
+    };
+    if label.is_empty() || !label.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    segments.len() == 6
+        && segments[0].is_empty()
+        && segments[1] == "mp4"
+        && digits(segments[2])
+        && digits(segments[3])
+        && segments[4] == size.to_string()
+        && segments[5] == chunk.to_string()
+        && chunk == HDX_CHUNK
+        && size >= chunk
+        && size <= 8_000_000_000
+}
+
+/// The inclusive byte span a `Range` header asks for, or the whole file when it has none.
+fn parse_byte_range(header: Option<&str>, size: u64) -> Option<(u64, u64)> {
+    let Some(header) = header else {
+        return Some((0, size - 1));
+    };
+    let spec = header.trim().strip_prefix("bytes=")?;
+    let (first, last) = spec.split_once('-')?;
+    let start: u64 = first.trim().parse().ok()?;
+    if start >= size {
+        return None;
+    }
+    let end = if last.trim().is_empty() {
+        size - 1
+    } else {
+        last.trim().parse::<u64>().ok()?.min(size - 1)
+    };
+    (end >= start).then_some((start, end))
+}
+
+/// Stream a path-addressed backup file to the browser part by part.
+///
+/// Each part is a signed `/sora/` request the storage host answers only without a browser's
+/// Origin header, so the engine makes it. One part is held in memory at a time.
+fn handle_hdx_proxy(
+    mut stream: TcpStream,
+    query: &str,
+    range_header: Option<&str>,
+    head_only: bool,
+) {
+    let (Some(origin), Some(path), Some(size), Some(chunk)) = (
+        parse_query_param(query, "o"),
+        parse_query_param(query, "pa"),
+        parse_query_param(query, "s").and_then(|v| v.parse::<u64>().ok()),
+        parse_query_param(query, "p").and_then(|v| v.parse::<u64>().ok()),
+    ) else {
+        send_json_result_with_head(
+            stream,
+            Err("BAD_REQUEST: Thiếu tham số nguồn phát".into()),
+            head_only,
+        );
+        return;
+    };
+    if !hdx_params_ok(&origin, &path, size, chunk) {
+        send_json_result_with_head(
+            stream,
+            Err("BAD_REQUEST: Tham số nguồn phát không hợp lệ".into()),
+            head_only,
+        );
+        return;
+    }
+    let Some((start, end)) = parse_byte_range(range_header, size) else {
+        let header = format!(
+            "HTTP/1.1 416 Range Not Satisfiable\r\n\
+             Content-Range: bytes */{size}\r\n\
+             Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.flush();
+        return;
+    };
+    let header = format!(
+        "HTTP/1.1 206 Partial Content\r\n\
+         Content-Type: video/mp4\r\n\
+         Content-Length: {}\r\n\
+         Content-Range: bytes {start}-{end}/{size}\r\n\
+         Accept-Ranges: bytes\r\n\
+         Cache-Control: no-store\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Cross-Origin-Resource-Policy: cross-origin\r\n\
+         Connection: close\r\n\r\n",
+        end - start + 1
+    );
+    if stream.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+    if head_only {
+        let _ = stream.flush();
+        return;
+    }
+    let agent = sora_agent();
+    let last_part = (size - 1) / chunk;
+    let mut part = start / chunk;
+    loop {
+        let part_start = part * chunk;
+        if part_start > end {
+            break;
+        }
+        let bytes = match fetch_sora_part(&agent, &origin, &path, size, part) {
+            Ok(bytes) => bytes,
+            // The head is already sent, so a failure can only drop the connection.
+            Err(_) => return,
+        };
+        let from = (start.max(part_start) - part_start) as usize;
+        let to = ((end + 1).min(part_start + bytes.len() as u64) - part_start) as usize;
+        if from < to && from < bytes.len() {
+            if stream.write_all(&bytes[from..to.min(bytes.len())]).is_err() {
+                return;
+            }
+        }
+        if part >= last_part {
+            break;
+        }
+        part += 1;
+    }
+    let _ = stream.flush();
+}
+
 fn map_error_status_and_message(err: &str) -> (&'static str, &str) {
     if let Some(msg) = err.strip_prefix("NOT_FOUND:").or_else(|| err.strip_prefix("NO_SOURCE:")) {
         ("404 Not Found", msg.trim())
@@ -1349,6 +1486,7 @@ fn handle_client(
                     "/data/poster/<file>.jpg",
                     "/api/image?url=<image_url>",
                     "/api/stream?url=<watch_url>",
+                    "/api/hdx?o=<host>&pa=<path>&s=<size>&p=<chunk>",
                     "/api/playlist.m3u8?url=<watch_or_player_url>",
                     "/api/extract?url=<watch_or_player_url>"
                 ]
@@ -1515,6 +1653,9 @@ fn handle_client(
                 ),
                 Err(err) => send_json_result_with_head(stream, Err(err), head_only),
             }
+        }
+        "/api/hdx" => {
+            handle_hdx_proxy(stream, query, request.header("range"), head_only);
         }
         "/api/extract" | "/extract" => {
             let target = parse_query_param(query, "url")

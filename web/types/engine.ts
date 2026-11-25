@@ -145,14 +145,19 @@ export interface Episode {
   watch_url: string;
 }
 
-/** One video file of the backup server, to be read through the media worker. */
-export interface HdxSource {
+/** Shared fields of every backup-server source. */
+export interface HdxSourceBase {
   /** "1080p" */
   label: string;
   height: number;
+  /** "h264" or "av1". */
   codec: string;
   /** Bytes of the whole film. */
   size: number;
+}
+
+/** A whole file read straight from the storage host, its first bytes scrambled. */
+export interface HdxWholeFile extends HdxSourceBase {
   /** Bytes per part; the parts after the first carry their number at the end of `url`. */
   part_size: number;
   url: string;
@@ -161,6 +166,14 @@ export interface HdxSource {
   /** Bytes at the start of the first part that are scrambled. */
   encrypted_head: number;
 }
+
+/** A file read back through the engine, which signs each part the host will not serve us. */
+export interface HdxProxy extends HdxSourceBase {
+  /** Engine URL to play directly; it answers range requests. */
+  proxy: string;
+}
+
+export type HdxSource = HdxWholeFile | HdxProxy;
 
 /** What /api/stream says to play for one episode. */
 export type EngineStream =

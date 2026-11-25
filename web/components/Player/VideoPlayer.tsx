@@ -12,7 +12,7 @@ import type {
 } from "hls.js";
 import { stripAdBreaks } from "../../lib/adfilter";
 import { API_BASE, EngineError, getStream } from "../../lib/engine";
-import { defaultSourceIndex, ensureHdxWorker, hdxMediaUrl } from "../../lib/hdx";
+import { defaultSourceIndex, ensureHdxWorker, hdxMediaUrl, isProxyStream } from "../../lib/hdx";
 import { attachSeekPreview } from "./seekPreview";
 import styles from "./VideoPlayer.module.css";
 
@@ -401,7 +401,9 @@ export default function VideoPlayer({
               setFatalError("no-source");
               return;
             }
-            if (!(await ensureHdxWorker())) {
+            // Proxy files play straight from the engine; only the older whole-file form needs
+            // the service worker.
+            if (!isProxyStream(stream.sources) && !(await ensureHdxWorker())) {
               setFatalError("no-worker");
               return;
             }

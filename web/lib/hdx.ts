@@ -1,3 +1,4 @@
+import { API_BASE } from "./engine";
 import type { HdxSource } from "@/types/engine";
 
 /** The worker that serves the backup server's files; see `public/hdx-sw.js`. */
@@ -40,8 +41,16 @@ export function ensureHdxWorker(): Promise<boolean> {
   return registration;
 }
 
-/** What the `<video>` element plays: the worker reads it and answers with the real bytes. */
+/** Whether a stream's files are read back through the engine rather than the worker. */
+export function isProxyStream(sources: HdxSource[]): boolean {
+  return sources.length > 0 && "proxy" in sources[0];
+}
+
+/** What the `<video>` element plays for one source. */
 export function hdxMediaUrl(source: HdxSource): string {
+  if ("proxy" in source) {
+    return `${API_BASE}${source.proxy}`;
+  }
   const query = new URLSearchParams({
     u: source.url,
     s: String(source.size),
@@ -52,10 +61,17 @@ export function hdxMediaUrl(source: HdxSource): string {
   return `/hdx/media.mp4?${query.toString()}`;
 }
 
+/** Whether this browser can decode a source, so an AV1-only file is not chosen in vain. */
+function canPlay(source: HdxSource): boolean {
+  if (typeof document === "undefined") return true;
+  const probe = document.createElement("video");
+  const codec = source.codec === "av1" ? 'codecs="av01.0.05M.08"' : 'codecs="avc1.4d401f"';
+  return probe.canPlayType(`video/mp4; ${codec}`) !== "";
+}
+
 /**
- * The file to start with: the best one the screen can show, and the smallest when the browser
- * has been asked to save data. Every preview stop and every start downloads real video, so a
- * phone is not given a 1080p file it cannot show.
+ * The file to start with: the best one the screen can show and the browser can decode, and
+ * the smallest when the browser has been asked to save data.
  */
 export function defaultSourceIndex(sources: HdxSource[]): number {
   if (sources.length === 0) return -1;
@@ -67,6 +83,9 @@ export function defaultSourceIndex(sources: HdxSource[]): number {
   const wide =
     typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches === true;
   const cap = wide ? 1080 : 720;
-  const index = sources.findIndex((source) => source.height <= cap);
-  return index >= 0 ? index : sources.length - 1;
+  // Sources arrive best-first, so the first that fits and plays is the highest such one.
+  const best = sources.findIndex((source) => source.height <= cap && canPlay(source));
+  if (best >= 0) return best;
+  const playable = sources.findIndex(canPlay);
+  return playable >= 0 ? playable : sources.length - 1;
 }
